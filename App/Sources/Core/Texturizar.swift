@@ -94,10 +94,13 @@ enum Texturizar {
             let a = punto(malla.vertices[i]), b = punto(malla.vertices[j]), c = punto(malla.vertices[k])
             let n = normal(malla, i, j, k, a, b, c)
             var lista: [(foto: Int32, puntaje: Float)] = []
+            var colores: [SIMD3<Float>] = []
             for f in fotogramas.indices {
                 guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f]) else { continue }
                 lista.append((Int32(f), r.puntaje * factorNitidez[f]))
+                colores.append(colorCentro(r.uv, fotogramas[f]))
             }
+            lista = consistentes(lista, colores: colores)
             if lista.isEmpty {
                 // Edges and corners seen only at a grazing angle: a slanted photo beats none.
                 for f in fotogramas.indices {
@@ -134,6 +137,28 @@ enum Texturizar {
             if cambios == 0 { break }
         }
         return etiqueta
+    }
+
+    /// Colour a photo sees at the middle of a triangle (from its UVs).
+    private static func colorCentro(_ uv: [Float], _ f: Fotograma) -> SIMD3<Float> {
+        let u = (uv[0] + uv[2] + uv[4]) / 3 * Float(f.ancho)
+        let v = (uv[1] + uv[3] + uv[5]) / 3 * Float(f.alto)
+        return f.color(u: min(max(u, 0), Float(f.ancho - 2)), v: min(max(v, 0), Float(f.alto - 2)))
+    }
+
+    /// Photo consistency: when three or more photos see a triangle, drop the ones
+    /// whose colour there is far from the median. That removes things the mesh
+    /// doesn't have (thin chair legs, a passer-by) that a single photo would
+    /// otherwise paint onto the surface behind them.
+    static func consistentes(_ lista: [(foto: Int32, puntaje: Float)], colores: [SIMD3<Float>], tolerancia: Float = 45) -> [(foto: Int32, puntaje: Float)] {
+        guard lista.count >= 3, colores.count == lista.count else { return lista }
+        func mediana(_ valores: [Float]) -> Float {
+            let o = valores.sorted()
+            return o.count % 2 == 1 ? o[o.count / 2] : (o[o.count / 2 - 1] + o[o.count / 2]) / 2
+        }
+        let centro = SIMD3(mediana(colores.map(\.x)), mediana(colores.map(\.y)), mediana(colores.map(\.z)))
+        let filtrada = zip(lista, colores).filter { simd_distance($0.1, centro) <= tolerancia }.map(\.0)
+        return filtrada.isEmpty ? lista : filtrada
     }
 
     /// UVs of every triangle's corners on its chosen photo (six values per

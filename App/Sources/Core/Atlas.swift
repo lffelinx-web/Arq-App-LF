@@ -169,7 +169,7 @@ enum Atlas {
     ///   - tamanos: pixel size of each photo's full-resolution file.
     static func planificar(
         _ malla: PiezaMalla, etiquetas: [Int32], uvFoto: [Float], fotogramas: [Fotograma],
-        tamanos: [SIMD2<Int>], lado: Int = 4096, maximoAtlas: Int = 3
+        tamanos: [SIMD2<Int>], lado: Int = 4096, maximoAtlas: Int = 4
     ) -> Plan {
         let margen = 2
         let celda = 8
@@ -192,16 +192,24 @@ enum Atlas {
         }
         let sinFoto = (0..<malla.triangulos).filter { etiquetas[$0] < 0 }
 
-        // Scale so everything fits; shrink further if packing still overflows.
-        let areaTotal = rectangulos.reduce(Float(0)) { s, r in s + (r.maximo.x - r.minimo.x + 1) * (r.maximo.y - r.minimo.y + 1) }
+        // Same texel density everywhere: patches photographed from very close
+        // would otherwise take most of the atlas and squeeze the rest.
+        let areasRectangulo = rectangulos.map { (($0.maximo.x - $0.minimo.x) + 1) * (($0.maximo.y - $0.minimo.y) + 1) }
+        let densidades = lista.map { parche in densidad(parche, malla: malla, uvFoto: uvFoto, tamano: tamanos[Int(etiquetas[parche[0]])]) }
         let areaCeldas = Float(sinFoto.count * (celda + margen * 2) * (celda + margen * 2))
         let capacidad = Float(maximoAtlas * lado * lado) * 0.8 - areaCeldas
-        let mayor = rectangulos.reduce(Float(1)) { max($0, $1.maximo.x - $1.minimo.x, $1.maximo.y - $1.minimo.y) }
-        var escala = min(1, (max(capacidad, 1) / max(areaTotal, 1)).squareRoot(), Float(lado - 2 * margen - 2) / mayor)
+        let porDensidad = escalasPorDensidad(areas: areasRectangulo, densidades: densidades, capacidad: max(capacidad, 1))
+        let limite = Float(lado - 2 * margen - 2)
+        let escalasBase = zip(rectangulos, porDensidad).map { r, s in
+            min(s, limite / max(r.maximo.x - r.minimo.x, r.maximo.y - r.minimo.y, 1))
+        }
+        var factor: Float = 1
+        var escalas = escalasBase
         var ubicaciones: [(atlas: Int, x: Int, y: Int)] = []
         var tamanosPaquete: [SIMD2<Int>] = []
         for _ in 0..<30 {
-            tamanosPaquete = rectangulos.map { r in
+            escalas = escalasBase.map { $0 * factor }
+            tamanosPaquete = zip(rectangulos, escalas).map { r, escala in
                 SIMD2(Int(((r.maximo.x - r.minimo.x) * escala).rounded(.up)) + 1 + 2 * margen,
                       Int(((r.maximo.y - r.minimo.y) * escala).rounded(.up)) + 1 + 2 * margen)
             } + Array(repeating: SIMD2(celda + 2 * margen, celda + 2 * margen), count: sinFoto.count)
@@ -209,7 +217,7 @@ enum Atlas {
                 ubicaciones = u
                 break
             }
-            escala *= 0.85
+            factor *= 0.85
         }
         if ubicaciones.isEmpty {
             // Too many untextured triangles to pack: they share one cell.
@@ -230,7 +238,7 @@ enum Atlas {
                 for k in 0..<3 {
                     let p = SIMD2(uvFoto[t * 6 + k * 2], uvFoto[t * 6 + k * 2 + 1]) * tam
                     origen.append(p)
-                    destino.append(base + (p - rectangulos[n].minimo) * escala + 0.5)
+                    destino.append(base + (p - rectangulos[n].minimo) * escalas[n] + 0.5)
                     let v = malla.indices[t * 3 + k]
                     colores.append(desplazamientos[clave(v, foto)] ?? .zero)
                 }
@@ -289,6 +297,43 @@ enum Atlas {
         let numero = (tareas.map { Int($0.atlas) }.max() ?? -1) + 1
         malla3.orientada = conNormales
         return Plan(lado: lado, numeroAtlas: numero, malla: malla3, tareas: tareasOrdenadas, ganancias: fotogramas.map(\.ganancia))
+    }
+
+    /// Photo pixels per metre of a patch: sqrt(area in the photo / area in 3D).
+    static func densidad(_ parche: [Int], malla: PiezaMalla, uvFoto: [Float], tamano: SIMD2<Int>) -> Float {
+        var areaFoto: Float = 0, areaMundo: Float = 0
+        let w = Float(tamano.x), h = Float(tamano.y)
+        for t in parche {
+            let p = (0..<3).map { k in SIMD2(uvFoto[t * 6 + k * 2] * w, uvFoto[t * 6 + k * 2 + 1] * h) }
+            let d1 = p[1] - p[0], d2 = p[2] - p[0]
+            areaFoto += abs(d1.x * d2.y - d1.y * d2.x) / 2
+            let v = (0..<3).map { k -> SIMD3<Float> in
+                let q = malla.vertices[Int(malla.indices[t * 3 + k])]
+                return SIMD3(q.0, q.1, q.2)
+            }
+            areaMundo += simd_length(simd_cross(v[1] - v[0], v[2] - v[0])) / 2
+        }
+        return areaMundo > 1e-9 ? (areaFoto / areaMundo).squareRoot() : 1
+    }
+
+    /// Scale for each patch so all of them end up with the same pixels per metre
+    /// (never above the photo's own resolution) and together fill `capacidad`.
+    /// The common density is found by bisection.
+    static func escalasPorDensidad(areas: [Float], densidades: [Float], capacidad: Float) -> [Float] {
+        guard !areas.isEmpty else { return [] }
+        func total(_ d: Float) -> Float {
+            zip(areas, densidades).reduce(0) { s, par in
+                let e = min(1, d / max(par.1, 1e-6))
+                return s + par.0 * e * e
+            }
+        }
+        var bajo: Float = 0, alto = max(densidades.max() ?? 1, 1)
+        if total(alto) <= capacidad { return areas.map { _ in 1 } }
+        for _ in 0..<40 {
+            let medio = (bajo + alto) / 2
+            if total(medio) <= capacidad { bajo = medio } else { alto = medio }
+        }
+        return densidades.map { min(1, bajo / max($0, 1e-6)) }
     }
 
     /// Paints atlas number `indice`. `cargar` returns a full-size photo; photos are

@@ -9,7 +9,7 @@ enum LimpiezaMalla {
         let sinFragmentos = quitarFragmentos(soldada, minimo: max(40, soldada.triangulos / 400))
         // Large scans only: on a tiny mesh the opening would eat everything.
         let sinLaminas = sinFragmentos.triangulos >= 500
-            ? quitarFragmentos(abrir(sinFragmentos), minimo: max(40, sinFragmentos.triangulos / 400))
+            ? quitarFragmentos(abrir(sinFragmentos, anillos: 3), minimo: max(40, sinFragmentos.triangulos / 400))
             : sinFragmentos
         return compactar(suavizarBordes(rellenarHuecos(sinLaminas)))
     }
