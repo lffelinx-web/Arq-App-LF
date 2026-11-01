@@ -64,50 +64,51 @@ enum Texturizar {
         return (puntaje, [pa.u / w, pa.v / h, pb.u / w, pb.v / h, pc.u / w, pc.v / h])
     }
 
-    /// Photo chosen for every triangle (-1 when none fits).
-    static func etiquetas(_ malla: PiezaMalla, fotogramas: [Fotograma], pasadasSuavizado: Int = 2) -> [Int32] {
+    /// Photo chosen for every triangle (-1 when none fits). Each triangle keeps its
+    /// best few photos; then, pass after pass, it switches to the photo its
+    /// neighbours use when that photo is good enough (a Potts model solved by ICM).
+    /// That gives large patches with few seams instead of a per-triangle mosaic.
+    static func etiquetas(_ malla: PiezaMalla, fotogramas: [Fotograma], suavizado: Float = 0.28, pasadas: Int = 10) -> [Int32] {
         let triangulos = malla.triangulos
         guard triangulos > 0, !fotogramas.isEmpty else { return [Int32](repeating: -1, count: triangulos) }
         let inversas = fotogramas.map(\.mundoACamara)
         let posiciones = fotogramas.map(\.posicion)
+        let nitidezMaxima = max(fotogramas.map(\.nitidez).max() ?? 1, 1e-6)
+        let factorNitidez = fotogramas.map { ($0.nitidez / nitidezMaxima).squareRoot() * 0.7 + 0.3 }
 
-        func esquinas(_ t: Int) -> (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>, SIMD3<Float>) {
+        var candidatos = [[(foto: Int32, puntaje: Float)]](repeating: [], count: triangulos)
+        for t in 0..<triangulos {
             let i = Int(malla.indices[t * 3]), j = Int(malla.indices[t * 3 + 1]), k = Int(malla.indices[t * 3 + 2])
             let a = punto(malla.vertices[i]), b = punto(malla.vertices[j]), c = punto(malla.vertices[k])
-            return (a, b, c, normal(malla, i, j, k, a, b, c))
-        }
-        func valor(_ t: Int, _ foto: Int) -> Float {
-            let (a, b, c, n) = esquinas(t)
-            return puntaje(a, b, c, normal: n, foto: fotogramas[foto], inversa: inversas[foto], posicion: posiciones[foto])?.puntaje ?? 0
-        }
-
-        var etiqueta = [Int32](repeating: -1, count: triangulos)
-        var mejor = [Float](repeating: 0, count: triangulos)
-        for t in 0..<triangulos {
-            let (a, b, c, n) = esquinas(t)
-            for k in fotogramas.indices {
-                guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[k], inversa: inversas[k], posicion: posiciones[k]) else { continue }
-                if r.puntaje > mejor[t] {
-                    mejor[t] = r.puntaje
-                    etiqueta[t] = Int32(k)
-                }
+            let n = normal(malla, i, j, k, a, b, c)
+            var lista: [(foto: Int32, puntaje: Float)] = []
+            for f in fotogramas.indices {
+                guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f]) else { continue }
+                lista.append((Int32(f), r.puntaje * factorNitidez[f]))
             }
+            lista.sort { $0.puntaje > $1.puntaje }
+            candidatos[t] = Array(lista.prefix(6))
         }
 
-        guard pasadasSuavizado > 0 else { return etiqueta }
+        var etiqueta = candidatos.map { $0.first?.foto ?? -1 }
+        guard pasadas > 0 else { return etiqueta }
         let vecinos = vecindad(malla)
-        for _ in 0..<pasadasSuavizado {
+        for _ in 0..<pasadas {
             var cambios = 0
-            for t in 0..<triangulos {
-                var conteo: [Int32: Int] = [:]
-                for v in vecinos[t] where etiqueta[Int(v)] >= 0 { conteo[etiqueta[Int(v)], default: 0] += 1 }
-                guard let masComun = conteo.max(by: { $0.value < $1.value }),
-                      masComun.value >= 2, masComun.key != etiqueta[t] else { continue }
-                let candidata = masComun.key
-                let puntajeCandidata = valor(t, Int(candidata))
-                if puntajeCandidata > 0, puntajeCandidata >= 0.5 * mejor[t] {
-                    etiqueta[t] = candidata
-                    mejor[t] = puntajeCandidata
+            for t in 0..<triangulos where candidatos[t].count > 1 {
+                let mejor = candidatos[t][0].puntaje
+                var elegido = etiqueta[t]
+                var menorCosto = Float.infinity
+                for candidato in candidatos[t] {
+                    var costo = 1 - candidato.puntaje / mejor
+                    for v in vecinos[t] where etiqueta[Int(v)] != candidato.foto { costo += suavizado }
+                    if costo < menorCosto - 1e-6 {
+                        menorCosto = costo
+                        elegido = candidato.foto
+                    }
+                }
+                if elegido != etiqueta[t] {
+                    etiqueta[t] = elegido
                     cambios += 1
                 }
             }
@@ -117,8 +118,8 @@ enum Texturizar {
     }
 
     /// Builds the textured mesh, grouping triangles by photo.
-    static func construir(_ malla: PiezaMalla, fotogramas: [Fotograma], pasadasSuavizado: Int = 2) -> MallaTexturizada {
-        let etiqueta = etiquetas(malla, fotogramas: fotogramas, pasadasSuavizado: pasadasSuavizado)
+    static func construir(_ malla: PiezaMalla, fotogramas: [Fotograma]) -> MallaTexturizada {
+        let etiqueta = etiquetas(malla, fotogramas: fotogramas)
         var porFoto: [Int32: [Int]] = [:]
         for (t, e) in etiqueta.enumerated() { porFoto[e, default: []].append(t) }
 

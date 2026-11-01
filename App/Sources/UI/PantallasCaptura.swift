@@ -143,7 +143,7 @@ struct PantallaMalla: View {
             VistaUIKit(vista: escaner.vista).ignoresSafeArea()
             VStack(spacing: 10) {
                 BarraCaptura(titulo: "Escaneo 3D") {
-                    escaner.pausar()
+                    escaner.cerrar()
                     cerrar()
                 }
                 Pastilla(texto: escaner.escaneando ? escaner.aviso : "Escaneo en pausa")
@@ -189,6 +189,7 @@ struct PantallaMalla: View {
         let piezas = escaner.piezas()
         let fotogramas = escaner.fotosTomadas()
         let captura = escaner.vista.snapshot()
+        escaner.cerrar()
         let proyectoBase = Proyecto(nombre: nombre.isEmpty ? almacen.nombreSugerido(.malla) : nombre, tipo: .malla)
         Task { @MainActor in
             do {

@@ -20,6 +20,10 @@ struct Fotograma {
     var altoProfundidad = 0
     /// Full-resolution JPEG of this photo, used as texture.
     var archivo: URL?
+    /// RGB gain that evens this photo's exposure with the others (see `Exposicion`).
+    var ganancia = SIMD3<Float>(repeating: 1)
+    /// Sharpness (variance of the Laplacian); blurry photos score low.
+    var nitidez: Float = 1
 
     var mundoACamara: simd_float4x4 { camaraAMundo.inverse }
     var posicion: SIMD3<Float> { SIMD3(camaraAMundo.columns.3.x, camaraAMundo.columns.3.y, camaraAMundo.columns.3.z) }
@@ -46,8 +50,13 @@ struct Fotograma {
         return abs(medida - distancia) < 0.05 + 0.03 * distancia
     }
 
-    /// Bilinear colour sample.
+    /// Colour with the exposure gain applied.
     func color(u: Float, v: Float) -> SIMD3<Float> {
+        colorCrudo(u: u, v: v) * ganancia
+    }
+
+    /// Bilinear colour sample, as the camera took it.
+    func colorCrudo(u: Float, v: Float) -> SIMD3<Float> {
         let x0 = Int(u), y0 = Int(v)
         let fx = u - Float(x0), fy = v - Float(y0)
         func pixel(_ x: Int, _ y: Int) -> SIMD3<Float> {
@@ -57,6 +66,29 @@ struct Fotograma {
         let arriba = pixel(x0, y0) * (1 - fx) + pixel(x0 + 1, y0) * fx
         let abajo = pixel(x0, y0 + 1) * (1 - fx) + pixel(x0 + 1, y0 + 1) * fx
         return arriba * (1 - fy) + abajo * fy
+    }
+}
+
+extension Fotograma {
+    /// Variance of the Laplacian of the grey image, the usual focus/blur measure.
+    static func nitidez(rgba: [UInt8], ancho: Int, alto: Int) -> Float {
+        guard ancho > 2, alto > 2, rgba.count >= ancho * alto * 4 else { return 0 }
+        func gris(_ x: Int, _ y: Int) -> Float {
+            let i = (y * ancho + x) * 4
+            return 0.299 * Float(rgba[i]) + 0.587 * Float(rgba[i + 1]) + 0.114 * Float(rgba[i + 2])
+        }
+        var suma: Double = 0, sumaCuadrados: Double = 0
+        var n: Double = 0
+        for y in 1..<(alto - 1) {
+            for x in 1..<(ancho - 1) {
+                let l = Double(4 * gris(x, y) - gris(x - 1, y) - gris(x + 1, y) - gris(x, y - 1) - gris(x, y + 1))
+                suma += l
+                sumaCuadrados += l * l
+                n += 1
+            }
+        }
+        let media = suma / n
+        return Float(sumaCuadrados / n - media * media)
     }
 }
 

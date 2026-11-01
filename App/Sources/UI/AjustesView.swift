@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AjustesView: View {
     @AppStorage("unidad") private var unidad: Unidad = .metros
+    @AppStorage("fijarExposicion") private var fijarExposicion = true
     @Environment(\.dismiss) private var cerrar
 
     private var version: String {
@@ -18,6 +19,13 @@ struct AjustesView: View {
                     Picker("Medir en", selection: $unidad) {
                         ForEach(Unidad.allCases) { Text($0.nombre).tag($0) }
                     }
+                }
+                Section {
+                    Toggle("Fijar exposición y balance de blancos", isOn: $fijarExposicion)
+                } header: {
+                    Text("Escaneo 3D")
+                } footer: {
+                    Text("Mantiene el mismo tono en todas las fotos de la textura. Empieza el escaneo apuntando a una zona con luz normal; si el cuarto tiene zonas muy oscuras y muy claras, desactívalo.")
                 }
                 Section("Dispositivo") {
                     estado("Escaneo de cuartos (RoomPlan)", Capacidades.roomPlan)

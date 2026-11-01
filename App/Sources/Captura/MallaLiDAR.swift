@@ -1,4 +1,5 @@
 import ARKit
+import AVFoundation
 import Combine
 import CoreImage
 import ModelIO
@@ -19,11 +20,17 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     static let maximoFotos = 80
     /// Width of the texture photos and of the small copy used for vertex colours.
-    static let anchoTextura: Float = 1440
+    static let anchoTextura: Float = 2560
     static let anchoColor: Float = 320
     /// Photos are written here while scanning and moved into the project on saving.
     let carpetaFotos = FileManager.default.temporaryDirectory.appendingPathComponent("Fotos-\(UUID().uuidString)", isDirectory: true)
     private var fotoAnterior: (transform: simd_float4x4, tiempo: TimeInterval)?
+    /// When the session (re)started, to lock the camera once auto-exposure settles.
+    private var inicioSesion = Date()
+    private var camaraBloqueada = false
+    /// Ajustes → "Fijar exposición" (on by default).
+    private var fijarExposicion: Bool { UserDefaults.standard.object(forKey: "fijarExposicion") as? Bool ?? true }
+    private var altaResolucion = false
     private let colaFotos = DispatchQueue(label: "com.lfaz.arq.fotos", qos: .utility)
     private let candado = NSLock()
     private var fotogramas: [Fotograma] = []
@@ -65,7 +72,36 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             configuracion.frameSemantics.insert(.sceneDepth)
         }
         configuracion.planeDetection = [.horizontal, .vertical]
+        // A 4:3 format that can also take full-resolution stills for the textures.
+        if let formato = ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing {
+            configuracion.videoFormat = formato
+            altaResolucion = true
+        } else {
+            altaResolucion = false
+        }
         return configuracion
+    }
+
+    /// Locks white balance and exposure so every photo has the same tone.
+    private func bloquearCamara() {
+        guard fijarExposicion, let camara = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
+        do {
+            try camara.lockForConfiguration()
+            if camara.isWhiteBalanceModeSupported(.locked) { camara.whiteBalanceMode = .locked }
+            if camara.isExposureModeSupported(.locked) { camara.exposureMode = .locked }
+            camara.unlockForConfiguration()
+        } catch {}
+    }
+
+    private func liberarCamara() {
+        camaraBloqueada = false
+        guard let camara = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
+        do {
+            try camara.lockForConfiguration()
+            if camara.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { camara.whiteBalanceMode = .continuousAutoWhiteBalance }
+            if camara.isExposureModeSupported(.continuousAutoExposure) { camara.exposureMode = .continuousAutoExposure }
+            camara.unlockForConfiguration()
+        } catch {}
     }
 
     /// Starts from scratch, dropping the mesh and photos.
@@ -77,6 +113,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         try? FileManager.default.createDirectory(at: carpetaFotos, withIntermediateDirectories: true)
         ultimaFoto = nil
         fotos = 0
+        liberarCamara()
+        inicioSesion = Date()
         vista.session.run(configuracion(), options: [.resetTracking, .removeExistingAnchors])
         capturando = true
         escaneando = true
@@ -85,6 +123,9 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     /// Continues after a pause keeping what was scanned.
     func reanudar() {
         vista.session.run(configuracion())
+        // Pausing may reset the camera; lock it again once it settles.
+        camaraBloqueada = false
+        inicioSesion = Date()
         capturando = true
         escaneando = true
     }
@@ -93,6 +134,12 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         capturando = false
         vista.session.pause()
         escaneando = false
+    }
+
+    /// Leaves the camera on automatic for the rest of the app.
+    func cerrar() {
+        pausar()
+        liberarCamara()
     }
 
     /// Photos taken so far.
@@ -110,17 +157,18 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     /// Saves the scan into `carpeta`, returning the vertex and triangle count.
     static func guardar(_ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
-        var piezas = piezas
+        // One welded, cleaned mesh instead of ARKit's loose pieces.
+        var malla = LimpiezaMalla.limpiar(Texturizar.unir(piezas))
+        var fotogramas = fotogramas
         if !fotogramas.isEmpty {
-            for i in piezas.indices {
-                piezas[i].colores = Colorear.colores(vertices: piezas[i].vertices, normales: piezas[i].normales, fotogramas: fotogramas)
-            }
+            Exposicion.igualar(&fotogramas, malla: malla)
+            malla.colores = Colorear.colores(vertices: malla.vertices, normales: malla.normales, fotogramas: fotogramas)
         }
-        let texturizada = try guardarTextura(Texturizar.unir(piezas), fotogramas: fotogramas, en: carpeta)
+        let texturizada = try guardarTextura(malla, fotogramas: fotogramas, en: carpeta)
         let ply = carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
-        let totales = try PLY.escribir(piezas, en: ply)
+        let totales = try PLY.escribir([malla], en: ply)
         let obj = carpeta.appendingPathComponent(ArchivoProyecto.mallaOBJ.rawValue)
-        try OBJ.escribir(piezas, en: obj, nombre: Formato.nombreArchivo(nombre))
+        try OBJ.escribir([malla], en: obj, nombre: Formato.nombreArchivo(nombre))
         if let captura {
             try? captura.reducida(a: 1600).jpegData(compressionQuality: 0.85)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.foto.rawValue))
             try? captura.reducida(a: 400).jpegData(compressionQuality: 0.8)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.miniatura.rawValue))
@@ -153,17 +201,38 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
         let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue, isDirectory: true)
         try FileManager.default.createDirectory(at: fotos, withIntermediateDirectories: true)
+        let contexto = CIContext(options: [.cacheIntermediates: false])
         for foto in texturizada.fotosUsadas {
-            guard let origen = conFoto[Int(foto)].archivo else { continue }
+            let fotograma = conFoto[Int(foto)]
+            guard let origen = fotograma.archivo else { continue }
             let destino = fotos.appendingPathComponent(Texturizar.nombreFoto(foto))
             try? FileManager.default.removeItem(at: destino)
-            try FileManager.default.copyItem(at: origen, to: destino)
+            if !copiar(origen, a: destino, ganancia: fotograma.ganancia, contexto: contexto) {
+                try FileManager.default.copyItem(at: origen, to: destino)
+            }
         }
         try Texturizar.escribirOBJ(texturizada, en: fotos)
         try Texturizar.datos(texturizada).write(to: carpeta.appendingPathComponent(ArchivoProyecto.texturaBIN.rawValue), options: .atomic)
         return texturizada
     }
 
+
+    /// Copies a photo applying its exposure gain. The gain was measured on sRGB
+    /// values; Core Image works in linear light, hence the 2.2 power.
+    private static func copiar(_ origen: URL, a destino: URL, ganancia: SIMD3<Float>, contexto: CIContext) -> Bool {
+        guard simd_reduce_max(simd_abs(ganancia - 1)) > 0.01 else { return false }
+        guard let imagen = CIImage(contentsOf: origen), let filtro = CIFilter(name: "CIColorMatrix") else { return false }
+        let lineal = SIMD3<Float>(pow(ganancia.x, 2.2), pow(ganancia.y, 2.2), pow(ganancia.z, 2.2))
+        filtro.setValue(imagen, forKey: kCIInputImageKey)
+        filtro.setValue(CIVector(x: CGFloat(lineal.x), y: 0, z: 0, w: 0), forKey: "inputRVector")
+        filtro.setValue(CIVector(x: 0, y: CGFloat(lineal.y), z: 0, w: 0), forKey: "inputGVector")
+        filtro.setValue(CIVector(x: 0, y: 0, z: CGFloat(lineal.z), w: 0), forKey: "inputBVector")
+        guard let salida = filtro.outputImage else { return false }
+        return (try? contexto.writeJPEGRepresentation(
+            of: salida, to: destino, colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.85]
+        )) != nil
+    }
 
     // MARK: - ARSCNViewDelegate
 
@@ -180,6 +249,10 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     // MARK: - ARSessionDelegate
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        if !camaraBloqueada, capturando, case .normal = frame.camera.trackingState, Date().timeIntervalSince(inicioSesion) > 1.5 {
+            camaraBloqueada = true
+            bloquearCamara()
+        }
         tomarFotoSiConviene(frame)
         guard Date().timeIntervalSince(ultimoConteo) > 0.5 else { return }
         ultimoConteo = Date()
@@ -233,6 +306,23 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         let imagen = frame.capturedImage
         let profundidad = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap
         let archivo = carpetaFotos.appendingPathComponent("captura-\(Int(frame.timestamp * 1000)).jpg")
+        guard altaResolucion else {
+            procesar(imagen: imagen, profundidad: profundidad, camara: camara, archivo: archivo)
+            return
+        }
+        // Full-resolution still (about 4032 × 3024) for sharper textures; the
+        // depth from the current frame still applies because the iPhone is still.
+        vista.session.captureHighResolutionFrame { [weak self] alta, _ in
+            guard let self else { return }
+            if let alta {
+                self.procesar(imagen: alta.capturedImage, profundidad: profundidad, camara: alta.camera, archivo: archivo)
+            } else {
+                self.procesar(imagen: imagen, profundidad: profundidad, camara: camara, archivo: archivo)
+            }
+        }
+    }
+
+    private func procesar(imagen: CVPixelBuffer, profundidad: CVPixelBuffer?, camara: ARCamera, archivo: URL) {
         colaFotos.async { [weak self] in
             guard let self else { return }
             let fotograma = Self.fotograma(imagen: imagen, profundidad: profundidad, camara: camara, contexto: self.contextoCI, archivo: archivo)
@@ -286,6 +376,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             ancho: ancho, alto: alto, rgba: rgba
         )
         fotograma.archivo = guardada ? archivo : nil
+        fotograma.nitidez = Fotograma.nitidez(rgba: rgba, ancho: ancho, alto: alto)
 
         if let profundidad, CVPixelBufferGetPixelFormatType(profundidad) == kCVPixelFormatType_DepthFloat32 {
             CVPixelBufferLockBaseAddress(profundidad, .readOnly)

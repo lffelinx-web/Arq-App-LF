@@ -40,3 +40,9 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 - **Malla con color real:** durante el escaneo 3D se guardan hasta 90 fotos (cada vez que el iPhone se mueve o gira lo suficiente). Al guardar, cada vértice toma el color de la foto que lo vio más de cerca y de frente, usando la profundidad del LiDAR para no pintar lo que estaba tapado. Se exporta como **PLY** (con color, para MeshLab, Blender y CloudCompare), **OBJ** con color por vértice y **USDZ**.
 - **Varios cuartos:** después de terminar un cuarto, *Otro* escanea el siguiente con las mismas coordenadas y al guardar RoomPlan los une en un solo modelo y un solo plano.
 - **DXF:** el plano se exporta para AutoCAD y otros programas CAD, en metros, con capas MUROS, PUERTAS, VENTANAS, VANOS, MUEBLES, PISO y COTAS.
+
+## Fase 3: textura fotográfica
+
+- Fotos de hasta 2560 px tomadas solo con el iPhone casi quieto (sin desenfoque de movimiento), en alta resolución cuando el iPhone lo permite.
+- **3.1:** exposición y balance de blancos fijos durante el escaneo (se puede desactivar en Ajustes), ganancia RGB por foto para igualar tonos, elección de foto por zonas con un modelo de Potts (parches grandes, menos costuras) que además prefiere las fotos más nítidas, y limpieza de la malla (soldar piezas, quitar fragmentos sueltos y rellenar huecos pequeños).
+- Exporta OBJ + MTL + fotos en .zip y USDZ con textura.
