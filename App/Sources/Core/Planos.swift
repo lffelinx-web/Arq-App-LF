@@ -96,19 +96,19 @@ enum Planos {
             guard superficie >= areaMinima, simd_length(suma) > 1e-9 else { continue }
             let media = simd_normalize(suma)
 
+            var unicos = Set<UInt32>()
+            for k in region { for j in 0..<3 { unicos.insert(m.indices[k * 3 + j]) } }
+            let vertices = unicos.sorted()
+
             // Walls are vertical, floor and ceiling horizontal (ARKit's Y points up).
             let n: SIMD3<Float>
             if clase[semilla] == pared {
                 guard abs(media.y) < 0.35 else { continue }
-                n = simd_normalize(SIMD3(media.x, 0, media.z))
+                n = normalPared(vertices.map { m.vertices[Int($0)] }, aproximada: simd_normalize(SIMD3(media.x, 0, media.z)))
             } else {
                 guard abs(media.y) > 0.85 else { continue }
                 n = SIMD3(0, media.y > 0 ? 1 : -1, 0)
             }
-
-            var unicos = Set<UInt32>()
-            for k in region { for j in 0..<3 { unicos.insert(m.indices[k * 3 + j]) } }
-            let vertices = unicos.sorted()
             let distancias = vertices.map { v -> Float in
                 let p = m.vertices[Int(v)]
                 return simd_dot(n, SIMD3(p.0, p.1, p.2))
@@ -118,6 +118,33 @@ enum Planos {
             planos.append(Plano(normal: n, distancia: d, vertices: vertices, clase: clase[semilla]))
         }
         return planos
+    }
+
+    /// Horizontal normal of a wall by least squares: the wall's direction is the
+    /// main axis of its points seen from above (PCA), which is much steadier
+    /// than averaging noisy face normals. Falls back to `aproximada` when the
+    /// region is too narrow to tell.
+    static func normalPared(_ puntos: [(Float, Float, Float)], aproximada: SIMD3<Float>) -> SIMD3<Float> {
+        guard puntos.count >= 3 else { return aproximada }
+        let n = Float(puntos.count)
+        let mx = puntos.reduce(0) { $0 + $1.0 } / n
+        let mz = puntos.reduce(0) { $0 + $1.2 } / n
+        var sxx: Float = 0, szz: Float = 0, sxz: Float = 0
+        for p in puntos {
+            let dx = p.0 - mx, dz = p.2 - mz
+            sxx += dx * dx
+            szz += dz * dz
+            sxz += dx * dz
+        }
+        // Eigenvalues of the 2 × 2 covariance: a thin, long cloud is a clear wall line.
+        let traza = sxx + szz
+        let raiz = ((sxx - szz) * (sxx - szz) + 4 * sxz * sxz).squareRoot()
+        let mayor = (traza + raiz) / 2, menor = (traza - raiz) / 2
+        guard mayor > 1e-9, menor / mayor < 0.25 else { return aproximada }
+        let angulo = 0.5 * atan2(2 * sxz, sxx - szz)
+        var normal = SIMD3<Float>(-sin(angulo), 0, cos(angulo))
+        if simd_dot(normal, aproximada) < 0 { normal = -normal }
+        return normal
     }
 
     /// Area-weighted vertex normals, keeping each face on the side its original

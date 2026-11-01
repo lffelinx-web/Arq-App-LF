@@ -40,8 +40,25 @@ final class PlanosTests: XCTestCase {
         XCTAssertEqual(planos[0].normal.z, 1, accuracy: 1e-5)
         XCTAssertEqual(planos[0].normal.y, 0, accuracy: 1e-6)
         let r = Planos.regularizar(m)
-        let zs = r.vertices.map(\.2)
-        XCTAssertLessThan((zs.max() ?? 1) - (zs.min() ?? 0), 1e-4)
+        // Every point ends up on one vertical plane (within 0.1 mm)...
+        let n = Planos.detectar(r)[0]
+        let residuos = r.vertices.map { abs(simd_dot(n.normal, SIMD3($0.0, $0.1, $0.2)) - n.distancia) }
+        XCTAssertLessThan(residuos.max() ?? 1, 1e-4)
+        // ...and the least-squares fit keeps it facing the right way (under 0.05°).
+        XCTAssertLessThan(abs(n.normal.x), 0.001)
+        XCTAssertEqual(n.normal.y, 0, accuracy: 1e-6)
+    }
+
+    func testNormalDeParedPorMinimosCuadrados() {
+        // Points along a wall turned 30° about the vertical, with ±1 cm of noise.
+        let a: Float = .pi / 6
+        let puntos: [(Float, Float, Float)] = (0..<200).map { k in
+            let t = Float(k) * 0.01, ruido = 0.01 * sin(Float(k) * 2.3)
+            return (t * cos(a) - ruido * sin(a), Float(k % 7) * 0.3, t * sin(a) + ruido * cos(a))
+        }
+        let n = Planos.normalPared(puntos, aproximada: SIMD3(0, 0, 1))
+        XCTAssertEqual(n.x, -sin(a), accuracy: 0.01)
+        XCTAssertEqual(n.z, cos(a), accuracy: 0.01)
     }
 
     func testSinClasificacionNoSeToca() {

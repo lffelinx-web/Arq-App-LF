@@ -112,7 +112,7 @@ enum DXF {
         }
 
         private func n(_ v: Double) -> String {
-            String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), abs(v) < 0.00005 ? 0 : v)
+            String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), abs(v) < 0.00005 ? Double(0) : v)
         }
     }
 }
