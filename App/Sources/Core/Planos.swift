@@ -48,7 +48,7 @@ enum Planos {
     }
 
     /// Flat regions of wall, floor and ceiling and the plane of each.
-    static func detectar(_ m: PiezaMalla, areaMinima: Float = 0.3, angulo: Float = 20) -> [Plano] {
+    static func detectar(_ m: PiezaMalla, areaMinima: Float = 0.3, angulo: Float = 35) -> [Plano] {
         let t = m.triangulos
         var clase = [UInt8](repeating: ninguna, count: t)
         var normal = [SIMD3<Float>](repeating: .zero, count: t)
