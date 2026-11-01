@@ -3,7 +3,7 @@ import SceneKit
 import SceneKit.ModelIO
 import SwiftUI
 
-/// Orbit viewer for the USDZ/OBJ models.
+/// Orbit viewer for the USDZ, PLY and OBJ models.
 struct Visor3D: View {
     let url: URL
     @State private var escena: SCNScene?
@@ -30,7 +30,10 @@ struct Visor3D: View {
 
     nonisolated static func cargar(_ url: URL) -> SCNScene? {
         let escena: SCNScene?
-        if url.pathExtension.lowercased() == "obj" {
+        let extension_ = url.pathExtension.lowercased()
+        if extension_ == "ply" {
+            escena = (try? PLY.leer(url)).map(EscenaMalla.escena)
+        } else if extension_ == "obj" {
             escena = SCNScene(mdlAsset: MDLAsset(url: url))
         } else {
             escena = try? SCNScene(url: url, options: nil)

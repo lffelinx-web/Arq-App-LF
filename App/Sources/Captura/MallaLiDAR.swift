@@ -1,16 +1,30 @@
 import ARKit
 import Combine
+import CoreImage
 import ModelIO
 import SceneKit
 import UIKit
 
 /// Free-form LiDAR scan: ARKit rebuilds the surfaces around you as a triangle
-/// mesh, which is saved as OBJ (and USDZ when possible).
+/// mesh while photos are taken along the way; on saving, the photos paint the
+/// mesh and it is written as PLY and OBJ with colour (and USDZ when possible).
 final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSessionDelegate {
     let vista = ARSCNView(frame: .zero)
     @Published private(set) var triangulos = 0
     @Published private(set) var aviso = "Mueve el iPhone despacio para cubrir todo el espacio."
     @Published private(set) var escaneando = false
+    /// Photos kept to colour the mesh.
+    @Published private(set) var fotos = 0
+
+    static let maximoFotos = 90
+    private let colaFotos = DispatchQueue(label: "com.lfaz.arq.fotos", qos: .utility)
+    private let candado = NSLock()
+    private var fotogramas: [Fotograma] = []
+    private var procesandoFoto = false
+    private var capturando = false
+    private var ultimaFoto: simd_float4x4?
+    private var ultimaFotoFecha = Date.distantPast
+    private let contextoCI = CIContext(options: [.cacheIntermediates: false])
 
     private let material: SCNMaterial = {
         let m = SCNMaterial()
@@ -30,7 +44,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         vista.rendersContinuously = true
     }
 
-    func iniciar() {
+    private func configuracion() -> ARWorldTrackingConfiguration {
         let configuracion = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             configuracion.sceneReconstruction = .mesh
@@ -39,13 +53,39 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             configuracion.frameSemantics.insert(.sceneDepth)
         }
         configuracion.planeDetection = [.horizontal, .vertical]
-        vista.session.run(configuracion, options: [.resetTracking, .removeExistingAnchors])
+        return configuracion
+    }
+
+    /// Starts from scratch, dropping the mesh and photos.
+    func iniciar() {
+        candado.lock()
+        fotogramas.removeAll()
+        candado.unlock()
+        ultimaFoto = nil
+        fotos = 0
+        vista.session.run(configuracion(), options: [.resetTracking, .removeExistingAnchors])
+        capturando = true
+        escaneando = true
+    }
+
+    /// Continues after a pause keeping what was scanned.
+    func reanudar() {
+        vista.session.run(configuracion())
+        capturando = true
         escaneando = true
     }
 
     func pausar() {
+        capturando = false
         vista.session.pause()
         escaneando = false
+    }
+
+    /// Photos taken so far.
+    func fotosTomadas() -> [Fotograma] {
+        candado.lock()
+        defer { candado.unlock() }
+        return fotogramas
     }
 
     /// Mesh anchors converted to world coordinates.
@@ -55,20 +95,31 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     }
 
     /// Saves the scan into `carpeta`, returning the vertex and triangle count.
-    static func guardar(_ piezas: [PiezaMalla], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
+    static func guardar(_ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
+        var piezas = piezas
+        if !fotogramas.isEmpty {
+            for i in piezas.indices {
+                piezas[i].colores = Colorear.colores(vertices: piezas[i].vertices, normales: piezas[i].normales, fotogramas: fotogramas)
+            }
+        }
+        let ply = carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
+        let totales = try PLY.escribir(piezas, en: ply)
         let obj = carpeta.appendingPathComponent(ArchivoProyecto.mallaOBJ.rawValue)
-        let totales = try OBJ.escribir(piezas, en: obj, nombre: Formato.nombreArchivo(nombre))
+        try OBJ.escribir(piezas, en: obj, nombre: Formato.nombreArchivo(nombre))
         if let captura {
             try? captura.reducida(a: 1600).jpegData(compressionQuality: 0.85)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.foto.rawValue))
             try? captura.reducida(a: 400).jpegData(compressionQuality: 0.8)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.miniatura.rawValue))
         }
-        // USDZ opens in Quick Look and AR; OBJ stays as the universal copy.
-        let asset = MDLAsset(url: obj)
-        if MDLAsset.canExportFileExtension("usdz") {
-            try? asset.export(to: carpeta.appendingPathComponent(ArchivoProyecto.modeloUSDZ.rawValue))
+        // USDZ opens in Quick Look and AR. SceneKit keeps the vertex colours;
+        // ModelIO from the OBJ is the fallback.
+        let usdz = carpeta.appendingPathComponent(ArchivoProyecto.modeloUSDZ.rawValue)
+        let escrito = (try? PLY.leer(ply)).map { EscenaMalla.escena($0).write(to: usdz, options: nil, delegate: nil, progressHandler: nil) } ?? false
+        if !escrito, MDLAsset.canExportFileExtension("usdz") {
+            try? MDLAsset(url: obj).export(to: usdz)
         }
         return totales
     }
+
 
     // MARK: - ARSCNViewDelegate
 
@@ -85,6 +136,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     // MARK: - ARSessionDelegate
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        tomarFotoSiConviene(frame)
         guard Date().timeIntervalSince(ultimoConteo) > 0.5 else { return }
         ultimoConteo = Date()
         let total = frame.anchors.reduce(0) { $0 + (($1 as? ARMeshAnchor)?.geometry.faces.count ?? 0) }
@@ -101,6 +153,94 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             self.aviso = texto
             self.escaneando = false
         }
+    }
+
+    // MARK: - Photos
+
+    /// Keeps a photo each time the camera has moved or turned enough, so the
+    /// whole space ends up covered without filling the memory.
+    private func tomarFotoSiConviene(_ frame: ARFrame) {
+        guard capturando, !procesandoFoto, case .normal = frame.camera.trackingState else { return }
+        guard Date().timeIntervalSince(ultimaFotoFecha) > 0.4 else { return }
+        let camara = frame.camera
+        let t = camara.transform
+        if let anterior = ultimaFoto {
+            let movimiento = simd_distance(t.posicion, anterior.posicion)
+            let giro = acos(min(1, max(-1, simd_dot(-t.columns.2.xyz, -anterior.columns.2.xyz))))
+            guard movimiento > 0.25 || giro > 0.35 else { return }
+        }
+        candado.lock()
+        let lleno = fotogramas.count >= Self.maximoFotos
+        candado.unlock()
+        guard !lleno else { return }
+
+        procesandoFoto = true
+        ultimaFoto = t
+        ultimaFotoFecha = Date()
+        let imagen = frame.capturedImage
+        let profundidad = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap
+        colaFotos.async { [weak self] in
+            guard let self else { return }
+            let fotograma = Self.fotograma(imagen: imagen, profundidad: profundidad, camara: camara, contexto: self.contextoCI)
+            self.candado.lock()
+            if let fotograma { self.fotogramas.append(fotograma) }
+            let total = self.fotogramas.count
+            self.candado.unlock()
+            DispatchQueue.main.async {
+                self.fotos = total
+                self.procesandoFoto = false
+            }
+        }
+    }
+
+    /// Shrinks the camera image to 480 px wide and copies the LiDAR depth.
+    private static func fotograma(imagen: CVPixelBuffer, profundidad: CVPixelBuffer?, camara: ARCamera, contexto: CIContext) -> Fotograma? {
+        let anchoOriginal = CVPixelBufferGetWidth(imagen)
+        let altoOriginal = CVPixelBufferGetHeight(imagen)
+        guard anchoOriginal > 0 else { return nil }
+        let escala = Float(480) / Float(anchoOriginal)
+        let ancho = Int(Float(anchoOriginal) * escala)
+        let alto = Int(Float(altoOriginal) * escala)
+        let reducida = CIImage(cvPixelBuffer: imagen).transformed(by: CGAffineTransform(scaleX: CGFloat(escala), y: CGFloat(escala)))
+        guard let cg = contexto.createCGImage(reducida, from: CGRect(x: 0, y: 0, width: ancho, height: alto)) else { return nil }
+
+        var rgba = [UInt8](repeating: 0, count: ancho * alto * 4)
+        let dibujado = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let contexto = CGContext(
+                data: buffer.baseAddress, width: ancho, height: alto, bitsPerComponent: 8, bytesPerRow: ancho * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else { return false }
+            contexto.draw(cg, in: CGRect(x: 0, y: 0, width: ancho, height: alto))
+            return true
+        }
+        guard dibujado else { return nil }
+
+        let k = camara.intrinsics
+        var fotograma = Fotograma(
+            camaraAMundo: camara.transform,
+            fx: k.columns.0.x * escala, fy: k.columns.1.y * escala,
+            cx: k.columns.2.x * escala, cy: k.columns.2.y * escala,
+            ancho: ancho, alto: alto, rgba: rgba
+        )
+
+        if let profundidad, CVPixelBufferGetPixelFormatType(profundidad) == kCVPixelFormatType_DepthFloat32 {
+            CVPixelBufferLockBaseAddress(profundidad, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(profundidad, .readOnly) }
+            let w = CVPixelBufferGetWidth(profundidad)
+            let h = CVPixelBufferGetHeight(profundidad)
+            let bytesFila = CVPixelBufferGetBytesPerRow(profundidad)
+            if let base = CVPixelBufferGetBaseAddress(profundidad) {
+                var valores = [Float](repeating: 0, count: w * h)
+                for y in 0..<h {
+                    let fila = base.advanced(by: y * bytesFila).assumingMemoryBound(to: Float32.self)
+                    for x in 0..<w { valores[y * w + x] = fila[x] }
+                }
+                fotograma.profundidad = valores
+                fotograma.anchoProfundidad = w
+                fotograma.altoProfundidad = h
+            }
+        }
+        return fotograma
     }
 
     private static func mensaje(_ estado: ARCamera.TrackingState) -> String {

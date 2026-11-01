@@ -36,6 +36,7 @@ struct Medida: Codable, Hashable, Identifiable {
 enum ArchivoProyecto: String, CaseIterable {
     case modeloUSDZ = "modelo.usdz"
     case mallaOBJ = "malla.obj"
+    case mallaPLY = "malla.ply"
     case plano = "plano.json"
     case miniatura = "miniatura.jpg"
     case foto = "foto.jpg"
@@ -52,4 +53,7 @@ struct Proyecto: Codable, Hashable, Identifiable {
     /// Number of triangles for mesh scans, shown in the details.
     var triangulos: Int = 0
     var vertices: Int = 0
+    /// Optional so projects saved by earlier versions still load.
+    var fotos: Int?
+    var cuartos: Int?
 }

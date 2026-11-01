@@ -1,4 +1,5 @@
 #if canImport(RoomPlan) && !targetEnvironment(simulator)
+import ARKit
 import Combine
 import Foundation
 import RoomPlan
@@ -6,7 +7,8 @@ import simd
 import UIKit
 
 /// Drives Apple's RoomPlan scanner, which turns the LiDAR scan into walls,
-/// doors, windows and furniture with real dimensions.
+/// doors, windows and furniture with real dimensions. Several rooms can be
+/// scanned in a row: they share one AR session, so RoomPlan can join them.
 final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate {
     enum Estado: Equatable {
         case listo
@@ -19,11 +21,13 @@ final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate 
     static var disponible: Bool { RoomCaptureSession.isSupported }
 
     let vista: RoomCaptureView
+    private let sesionAR = ARSession()
     @Published private(set) var estado: Estado = .listo
-    @Published private(set) var resultado: CapturedRoom?
+    /// Every room finished in this session, in order.
+    @Published private(set) var cuartos: [CapturedRoom] = []
 
     override init() {
-        vista = RoomCaptureView(frame: .zero)
+        vista = RoomCaptureView(frame: .zero, arSession: sesionAR)
         super.init()
         vista.delegate = self
     }
@@ -32,21 +36,30 @@ final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate 
     required init?(coder: NSCoder) { return nil }
     func encode(with coder: NSCoder) {}
 
+    /// Starts over, discarding the rooms scanned so far.
     func iniciar() {
-        resultado = nil
+        cuartos = []
         estado = .escaneando
         vista.captureSession.run(configuration: RoomCaptureSession.Configuration())
     }
 
-    /// Ends the scan; RoomPlan then processes it and shows the 3D result.
+    /// Scans the next room keeping the same coordinates as the previous ones.
+    func otroCuarto() {
+        estado = .escaneando
+        vista.captureSession.run(configuration: RoomCaptureSession.Configuration())
+    }
+
+    /// Ends the current room; RoomPlan then processes it and shows the 3D result.
+    /// The AR session keeps running so another room can follow.
     func detener() {
         guard estado == .escaneando else { return }
         estado = .procesando
-        vista.captureSession.stop()
+        vista.captureSession.stop(pauseARSession: false)
     }
 
     func cancelar() {
         vista.captureSession.stop()
+        sesionAR.pause()
     }
 
     func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool {
@@ -61,29 +74,47 @@ final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate 
             if let error {
                 self.estado = .error(MensajeError.texto(error))
             } else {
-                self.resultado = processedResult
+                self.cuartos.append(processedResult)
                 self.estado = .terminado
             }
         }
     }
 
     /// Writes the USDZ model, the floor plan and RoomPlan's raw JSON into `carpeta`.
-    static func guardar(_ cuarto: CapturedRoom, en carpeta: URL) throws -> PlanoPlanta {
-        try cuarto.export(to: carpeta.appendingPathComponent(ArchivoProyecto.modeloUSDZ.rawValue))
-        if let crudo = try? JSONEncoder().encode(cuarto) {
-            try? crudo.write(to: carpeta.appendingPathComponent("roomplan.json"))
+    /// Several rooms are first joined into one structure.
+    static func guardar(_ cuartos: [CapturedRoom], en carpeta: URL) async throws -> PlanoPlanta {
+        let usdz = carpeta.appendingPathComponent(ArchivoProyecto.modeloUSDZ.rawValue)
+        let crudo = carpeta.appendingPathComponent("roomplan.json")
+        if cuartos.count == 1, let cuarto = cuartos.first {
+            try cuarto.export(to: usdz)
+            try? JSONEncoder().encode(cuarto).write(to: crudo)
+            return PlanoPlanta(cuarto)
         }
-        return PlanoPlanta(cuarto)
+        let estructura = try await StructureBuilder(options: [.beautifyObjects]).capturedStructure(from: cuartos)
+        try estructura.export(to: usdz)
+        try? JSONEncoder().encode(estructura).write(to: crudo)
+        return PlanoPlanta(estructura)
     }
 }
 
 extension PlanoPlanta {
-    /// Projects RoomPlan's 3D surfaces onto the floor, seen from above.
     init(_ cuarto: CapturedRoom) {
-        self.init()
-        let nivelPiso = Self.nivelPiso(cuarto)
+        self.init(muros: cuarto.walls, puertas: cuarto.doors, ventanas: cuarto.windows, vanos: cuarto.openings, objetos: cuarto.objects, pisos: cuarto.floors)
+    }
 
-        muros = cuarto.walls.map { muro in
+    init(_ estructura: CapturedStructure) {
+        self.init(muros: estructura.walls, puertas: estructura.doors, ventanas: estructura.windows, vanos: estructura.openings, objetos: estructura.objects, pisos: estructura.floors)
+    }
+
+    /// Projects RoomPlan's 3D surfaces onto the floor, seen from above.
+    init(
+        muros: [CapturedRoom.Surface], puertas: [CapturedRoom.Surface], ventanas: [CapturedRoom.Surface],
+        vanos: [CapturedRoom.Surface], objetos: [CapturedRoom.Object], pisos: [CapturedRoom.Surface]
+    ) {
+        self.init()
+        let nivelPiso = muros.map { Double($0.transform.columns.3.y - $0.dimensions.y / 2) }.min() ?? 0
+
+        self.muros = muros.map { muro in
             let (a, b) = Self.extremos(muro.transform, ancho: muro.dimensions.x)
             return Muro(a: a, b: b, altura: Double(muro.dimensions.y))
         }
@@ -95,9 +126,9 @@ extension PlanoPlanta {
                 return Abertura(tipo: tipo, a: a, b: b, altura: Double(s.dimensions.y), elevacion: max(0, base))
             }
         }
-        self.aberturas = aberturas(cuarto.doors, .puerta) + aberturas(cuarto.windows, .ventana) + aberturas(cuarto.openings, .vano)
+        self.aberturas = aberturas(puertas, .puerta) + aberturas(ventanas, .ventana) + aberturas(vanos, .vano)
 
-        muebles = cuarto.objects.map { objeto in
+        self.muebles = objetos.map { objeto in
             let t = objeto.transform
             return Mueble(
                 nombre: Self.nombre(objeto.category),
@@ -109,7 +140,7 @@ extension PlanoPlanta {
             )
         }
 
-        pisos = cuarto.floors.compactMap { piso in
+        self.pisos = pisos.compactMap { piso in
             var esquinas = piso.polygonCorners
             if esquinas.count < 3 {
                 let x = piso.dimensions.x / 2, y = piso.dimensions.y / 2
@@ -131,11 +162,6 @@ extension PlanoPlanta {
         let direccion = largo > 0 ? eje * (1 / largo) : Punto2D(1, 0)
         let mitad = Double(ancho) / 2
         return (centro - direccion * mitad, centro + direccion * mitad)
-    }
-
-    private static func nivelPiso(_ cuarto: CapturedRoom) -> Double {
-        let bases = cuarto.walls.map { Double($0.transform.columns.3.y - $0.dimensions.y / 2) }
-        return bases.min() ?? 0
     }
 
     private static let nombres: [String: String] = [

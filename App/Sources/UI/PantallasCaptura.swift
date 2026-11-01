@@ -34,6 +34,9 @@ private struct CapturaCuarto: View {
                     cerrar()
                 }
                 Pastilla(texto: indicacion)
+                if !escaner.cuartos.isEmpty {
+                    Pastilla(texto: escaner.cuartos.count == 1 ? "1 cuarto escaneado" : "\(escaner.cuartos.count) cuartos escaneados")
+                }
                 Spacer()
                 controles.padding(.bottom, 24)
             }
@@ -54,9 +57,12 @@ private struct CapturaCuarto: View {
     private var indicacion: String {
         switch escaner.estado {
         case .listo: return "Preparando…"
-        case .escaneando: return "Recorre el cuarto apuntando a paredes, puertas, ventanas y muebles."
-        case .procesando: return "Procesando el modelo…"
-        case .terminado: return "¡Listo! Revisa el modelo y guárdalo."
+        case .escaneando:
+            return escaner.cuartos.isEmpty
+                ? "Recorre el cuarto apuntando a paredes, puertas, ventanas y muebles."
+                : "Pasa al siguiente cuarto por la puerta y escanéalo igual."
+        case .procesando: return "Procesando el cuarto…"
+        case .terminado: return "Guarda el plano o toca Otro para agregar el siguiente cuarto; se unirán en un solo plano."
         case .error(let mensaje): return mensaje
         }
     }
@@ -65,7 +71,7 @@ private struct CapturaCuarto: View {
         switch escaner.estado {
         case .escaneando:
             Button { escaner.detener() } label: {
-                Label("Terminar escaneo", systemImage: "stop.circle.fill")
+                Label("Terminar cuarto", systemImage: "stop.circle.fill")
                     .font(.headline)
                     .padding(.horizontal, 24).padding(.vertical, 14)
                     .background(Tema.acento, in: Capsule())
@@ -75,8 +81,9 @@ private struct CapturaCuarto: View {
             ProgressView().tint(.white).padding()
         case .terminado, .error:
             HStack(spacing: 16) {
-                BotonCaptura(icono: "arrow.counterclockwise", titulo: "Repetir") { escaner.iniciar() }
-                if escaner.resultado != nil {
+                BotonCaptura(icono: "arrow.counterclockwise", titulo: "Reiniciar") { escaner.iniciar() }
+                if !escaner.cuartos.isEmpty {
+                    BotonCaptura(icono: "plus.square.on.square", titulo: "Otro") { escaner.otroCuarto() }
                     Button {
                         nombre = almacen.nombreSugerido(.cuarto)
                         pidiendoNombre = true
@@ -93,14 +100,15 @@ private struct CapturaCuarto: View {
     }
 
     private func guardar() {
-        guard let cuarto = escaner.resultado else { return }
+        let cuartos = escaner.cuartos
+        guard !cuartos.isEmpty else { return }
         guardando = true
         Task { @MainActor in
-            await Task.yield()
             do {
                 var proyecto = Proyecto(nombre: nombre.isEmpty ? almacen.nombreSugerido(.cuarto) : nombre, tipo: .cuarto)
+                proyecto.cuartos = cuartos.count
                 let carpeta = try almacen.preparar(proyecto)
-                let plano = try CuartoRoomPlan.guardar(cuarto, en: carpeta)
+                let plano = try await CuartoRoomPlan.guardar(cuartos, en: carpeta)
                 try almacen.guardar(plano, de: proyecto)
                 if let imagen = Exportacion.imagen(plano, tamano: CGSize(width: 400, height: 400)) {
                     try? imagen.jpegData(compressionQuality: 0.85)?.write(to: almacen.url(.miniatura, de: proyecto))
@@ -139,12 +147,12 @@ struct PantallaMalla: View {
                     cerrar()
                 }
                 Pastilla(texto: escaner.escaneando ? escaner.aviso : "Escaneo en pausa")
-                Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos")
+                Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos · \(escaner.fotos) fotos para color")
                 Spacer()
                 HStack(spacing: 18) {
                     BotonCaptura(icono: "arrow.counterclockwise", titulo: "Reiniciar") { escaner.iniciar() }
                     Button {
-                        escaner.escaneando ? escaner.pausar() : escaner.iniciar()
+                        escaner.escaneando ? escaner.pausar() : escaner.reanudar()
                     } label: {
                         Image(systemName: escaner.escaneando ? "pause.fill" : "play.fill")
                             .font(.title.weight(.bold))
@@ -179,6 +187,7 @@ struct PantallaMalla: View {
     private func guardar() {
         guardando = true
         let piezas = escaner.piezas()
+        let fotogramas = escaner.fotosTomadas()
         let captura = escaner.vista.snapshot()
         let proyectoBase = Proyecto(nombre: nombre.isEmpty ? almacen.nombreSugerido(.malla) : nombre, tipo: .malla)
         Task { @MainActor in
@@ -186,11 +195,12 @@ struct PantallaMalla: View {
                 let carpeta = try almacen.preparar(proyectoBase)
                 let nombreArchivo = proyectoBase.nombre
                 let totales = try await Task.detached(priority: .userInitiated) {
-                    try MallaLiDAR.guardar(piezas, captura: captura, en: carpeta, nombre: nombreArchivo)
+                    try MallaLiDAR.guardar(piezas, fotogramas: fotogramas, captura: captura, en: carpeta, nombre: nombreArchivo)
                 }.value
                 var proyecto = proyectoBase
                 proyecto.vertices = totales.vertices
                 proyecto.triangulos = totales.triangulos
+                proyecto.fotos = fotogramas.count
                 try almacen.guardar(proyecto)
                 guardando = false
                 alGuardar(proyecto)

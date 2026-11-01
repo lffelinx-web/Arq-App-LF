@@ -8,7 +8,7 @@ App para iPhone con LiDAR (Swift + SwiftUI) para arquitectura e interiores: esca
   - Modelo 3D (USDZ) con visor orbital y opción de **Ver en AR**.
   - Plano de planta 2D con cotas de cada muro, puertas, ventanas, muebles y barra de escala. Se puede acercar y mover.
   - Datos: área de piso, perímetro, altura promedio, volumen, área de muros sin huecos (útil para pintura) y medidas de cada elemento.
-  - Exporta el plano en **PDF** (tamaño carta) y **PNG**, además de **CSV**, **USDZ** y **JSON**.
+  - Exporta el plano en **PDF** (tamaño carta), **PNG** y **DXF**, además de **CSV**, **USDZ** y **JSON**.
 - **Escaneo 3D (malla LiDAR):** reconstruye cualquier espacio u objeto como malla de triángulos. Exporta **OBJ** (SketchUp, Blender, Revit, Rhino…) y **USDZ**.
 - **Medir:** cinta métrica en AR punto a punto con la mira al centro, apoyada en la profundidad del LiDAR. Guarda las medidas con foto y las exporta a CSV.
 - Unidades en metros, centímetros o pies y pulgadas.
@@ -34,3 +34,9 @@ Igual que en los otros proyectos: XcodeGen y GitHub Actions sobre macOS, sin nec
 3. En *Settings → Secrets and variables → Actions* del repositorio añade los mismos secrets que en los otros proyectos: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` y `APPLE_TEAM_ID`.
 
 Mientras falten los secrets, la subida a TestFlight se omite y el resto de la compilación sigue funcionando.
+
+## Fase 2
+
+- **Malla con color real:** durante el escaneo 3D se guardan hasta 90 fotos (cada vez que el iPhone se mueve o gira lo suficiente). Al guardar, cada vértice toma el color de la foto que lo vio más de cerca y de frente, usando la profundidad del LiDAR para no pintar lo que estaba tapado. Se exporta como **PLY** (con color, para MeshLab, Blender y CloudCompare), **OBJ** con color por vértice y **USDZ**.
+- **Varios cuartos:** después de terminar un cuarto, *Otro* escanea el siguiente con las mismas coordenadas y al guardar RoomPlan los une en un solo modelo y un solo plano.
+- **DXF:** el plano se exporta para AutoCAD y otros programas CAD, en metros, con capas MUROS, PUERTAS, VENTANAS, VANOS, MUEBLES, PISO y COTAS.

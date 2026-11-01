@@ -38,7 +38,11 @@ struct DetalleView: View {
     }
 
     private var modelo: URL? {
-        if proyecto.tipo == .malla, almacen.existe(.mallaOBJ, de: proyecto) { return almacen.url(.mallaOBJ, de: proyecto) }
+        if proyecto.tipo == .malla {
+            for archivo in [ArchivoProyecto.mallaPLY, .mallaOBJ] where almacen.existe(archivo, de: proyecto) {
+                return almacen.url(archivo, de: proyecto)
+            }
+        }
         if almacen.existe(.modeloUSDZ, de: proyecto) { return almacen.url(.modeloUSDZ, de: proyecto) }
         return nil
     }
@@ -158,10 +162,11 @@ struct DetalleView: View {
                 let url = carpeta.appendingPathComponent("\(base)-plano.png")
                 if (try? png.write(to: url)) != nil { urls.append(url) }
             }
+            if let dxf = Exportacion.texto(DXF.texto(plano, unidad: unidad), como: "\(base)-plano.dxf", en: carpeta) { urls.append(dxf) }
             if let csv = Exportacion.texto(CSV.plano(plano), como: "\(base)-medidas.csv", en: carpeta) { urls.append(csv) }
         }
         let copias: [(ArchivoProyecto, String)] = [
-            (.modeloUSDZ, "\(base).usdz"), (.mallaOBJ, "\(base).obj"), (.plano, "\(base)-plano.json"), (.foto, "\(base).jpg"),
+            (.modeloUSDZ, "\(base).usdz"), (.mallaPLY, "\(base).ply"), (.mallaOBJ, "\(base).obj"), (.plano, "\(base)-plano.json"), (.foto, "\(base).jpg"),
         ]
         for (archivo, nombre) in copias where almacen.existe(archivo, de: proyecto) {
             if let copia = Exportacion.copia(almacen.url(archivo, de: proyecto), como: nombre, en: carpeta) { urls.append(copia) }
@@ -179,6 +184,7 @@ struct DetalleView: View {
         case "png", "jpg": return "photo"
         case "csv": return "tablecells"
         case "json": return "curlybraces"
+        case "dxf": return "pencil.and.ruler"
         default: return "cube"
         }
     }
@@ -227,6 +233,9 @@ private struct HojaDatos: View {
     @ViewBuilder private func datosPlano(_ plano: PlanoPlanta) -> some View {
         Tarjeta {
             VStack(spacing: 10) {
+                if let cuartos = proyecto.cuartos, cuartos > 1 {
+                    FilaDato(titulo: "Cuartos", valor: "\(cuartos)", icono: "square.grid.2x2")
+                }
                 FilaDato(titulo: "Área de piso", valor: Formato.area(plano.area, unidad), icono: "square.dashed")
                 FilaDato(titulo: "Perímetro", valor: Formato.longitud(plano.perimetro, unidad), icono: "point.topleft.down.to.point.bottomright.curvepath")
                 FilaDato(titulo: "Altura promedio", valor: Formato.longitud(plano.alturaPromedio, unidad), icono: "arrow.up.and.down")
@@ -276,6 +285,7 @@ private struct HojaDatos: View {
             VStack(spacing: 10) {
                 FilaDato(titulo: "Vértices", valor: proyecto.vertices.formatted(), icono: "circle.grid.3x3")
                 FilaDato(titulo: "Triángulos", valor: proyecto.triangulos.formatted(), icono: "triangle")
+                FilaDato(titulo: "Color", valor: (proyecto.fotos ?? 0) > 0 ? "\(proyecto.fotos ?? 0) fotos" : "Sin color", icono: "paintpalette")
                 if let tamano = try? almacen.url(.mallaOBJ, de: proyecto).resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     FilaDato(titulo: "Archivo OBJ", valor: ByteCountFormatter.string(fromByteCount: Int64(tamano), countStyle: .file), icono: "doc")
                 }

@@ -6,8 +6,11 @@ struct PiezaMalla {
     var normales: [(Float, Float, Float)]
     /// Zero-based vertex indices, three per triangle.
     var indices: [UInt32]
+    /// Per-vertex colour taken from the camera; empty for an uncoloured scan.
+    var colores: [(UInt8, UInt8, UInt8)] = []
 
     var triangulos: Int { indices.count / 3 }
+    var conColor: Bool { !colores.isEmpty && colores.count == vertices.count }
 }
 
 /// Writes meshes as Wavefront OBJ, which SketchUp, Blender, Revit and
@@ -36,8 +39,15 @@ enum OBJ {
     static func texto(_ pieza: PiezaMalla, grupo: String, base: Int) -> String {
         var s = "o \(grupo)\n"
         s.reserveCapacity(pieza.vertices.count * 60 + pieza.indices.count * 12)
-        for v in pieza.vertices {
-            s += "v \(numero(v.0)) \(numero(v.1)) \(numero(v.2))\n"
+        if pieza.conColor {
+            // "v x y z r g b" is the de facto vertex-colour extension (Blender, MeshLab, CloudCompare).
+            for (v, c) in zip(pieza.vertices, pieza.colores) {
+                s += "v \(numero(v.0)) \(numero(v.1)) \(numero(v.2)) \(canal(c.0)) \(canal(c.1)) \(canal(c.2))\n"
+            }
+        } else {
+            for v in pieza.vertices {
+                s += "v \(numero(v.0)) \(numero(v.1)) \(numero(v.2))\n"
+            }
         }
         let conNormales = pieza.normales.count == pieza.vertices.count
         if conNormales {
@@ -54,6 +64,10 @@ enum OBJ {
             i += 3
         }
         return s
+    }
+
+    static func canal(_ c: UInt8) -> String {
+        String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), Double(c) / 255)
     }
 
     /// Millimetre precision is plenty for a LiDAR scan and keeps files small.
