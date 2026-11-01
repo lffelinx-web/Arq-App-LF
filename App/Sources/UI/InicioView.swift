@@ -18,13 +18,22 @@ struct InicioView: View {
         NavigationStack(path: $ruta) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    Text("Escaneo arquitectura")
+                        .font(.largeTitle.bold())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                     modos
                     proyectos
                 }
                 .padding(16)
             }
             .background(Tema.fondo.ignoresSafeArea())
-            .navigationTitle("Arq LF")
+            .navigationTitle("Escaneo arquitectura")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // The big title lives in the content so it can shrink to fit.
+                ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1) }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { ajustes = true } label: { Image(systemName: "gearshape") }
@@ -33,7 +42,7 @@ struct InicioView: View {
             .navigationDestination(for: Proyecto.self) { DetalleView(proyecto: $0) }
         }
         .fullScreenCover(item: $captura) { tipo in
-            Group {
+            ConPermisoCamara {
                 switch tipo {
                 case .cuarto: PantallaCuarto(alGuardar: abrir)
                 case .malla: PantallaMalla(alGuardar: abrir)

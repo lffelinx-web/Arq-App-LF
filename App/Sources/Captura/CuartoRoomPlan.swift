@@ -51,7 +51,7 @@ final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate 
 
     func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool {
         if let error {
-            DispatchQueue.main.async { self.estado = .error(error.localizedDescription) }
+            DispatchQueue.main.async { self.estado = .error(MensajeError.texto(error)) }
         }
         return true
     }
@@ -59,7 +59,7 @@ final class CuartoRoomPlan: NSObject, ObservableObject, RoomCaptureViewDelegate 
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
         DispatchQueue.main.async {
             if let error {
-                self.estado = .error(error.localizedDescription)
+                self.estado = .error(MensajeError.texto(error))
             } else {
                 self.resultado = processedResult
                 self.estado = .terminado

@@ -95,6 +95,14 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         }
     }
 
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        let texto = MensajeError.texto(error)
+        DispatchQueue.main.async {
+            self.aviso = texto
+            self.escaneando = false
+        }
+    }
+
     private static func mensaje(_ estado: ARCamera.TrackingState) -> String {
         switch estado {
         case .normal: return "Escaneando… cubre paredes, piso, techo y muebles."

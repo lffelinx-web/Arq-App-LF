@@ -229,6 +229,8 @@ struct PantallaMedicion: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 18).padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
+                } else if let error = medicion.error {
+                    Pastilla(texto: error)
                 } else {
                     Pastilla(texto: medicion.apuntando ? "Toca + para marcar el primer punto" : "Apunta a una superficie")
                 }

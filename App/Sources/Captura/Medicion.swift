@@ -12,6 +12,7 @@ final class Medicion: NSObject, ObservableObject, ARSCNViewDelegate {
     @Published private(set) var distanciaActual: Double?
     @Published private(set) var apuntando = false
     @Published private(set) var midiendo = false
+    @Published private(set) var error: String?
 
     private static let acento = UIColor(red: 0.96, green: 0.65, blue: 0.24, alpha: 1)
     private var inicio: SIMD3<Float>?
@@ -39,7 +40,8 @@ final class Medicion: NSObject, ObservableObject, ARSCNViewDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             configuracion.frameSemantics.insert(.sceneDepth)
         }
-        vista.session.run(configuracion)
+        error = nil
+        vista.session.run(configuracion, options: [.resetTracking, .removeExistingAnchors])
     }
 
     func pausar() { vista.session.pause() }
@@ -91,6 +93,11 @@ final class Medicion: NSObject, ObservableObject, ARSCNViewDelegate {
     var unidad: Unidad = .metros
 
     // MARK: - ARSCNViewDelegate
+
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        let texto = MensajeError.texto(error)
+        DispatchQueue.main.async { self.error = texto }
+    }
 
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
         DispatchQueue.main.async { self.actualizarObjetivo() }
