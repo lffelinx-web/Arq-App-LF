@@ -7,7 +7,47 @@ enum LimpiezaMalla {
     static func limpiar(_ malla: PiezaMalla) -> PiezaMalla {
         let soldada = soldar(malla)
         let sinFragmentos = quitarFragmentos(soldada, minimo: max(40, soldada.triangulos / 400))
-        return compactar(suavizarBordes(rellenarHuecos(sinFragmentos)))
+        // Large scans only: on a tiny mesh the opening would eat everything.
+        let sinLaminas = sinFragmentos.triangulos >= 500
+            ? quitarFragmentos(abrir(sinFragmentos), minimo: max(40, sinFragmentos.triangulos / 400))
+            : sinFragmentos
+        return compactar(suavizarBordes(rellenarHuecos(sinLaminas)))
+    }
+
+    /// Removes thin loose sheets (the floating "paper strips" ARKit leaves near
+    /// edges and reflections) with a morphological opening on the triangles:
+    /// peel `anillos` rings off every border, then grow them back from what
+    /// survived. Regions wider than about 2 × `anillos` triangles come back
+    /// whole; strips thinner than that have nothing left to grow from.
+    static func abrir(_ m: PiezaMalla, anillos: Int = 2) -> PiezaMalla {
+        guard m.triangulos > 0, anillos > 0 else { return m }
+        let vecinos = Texturizar.vecindad(m)
+        var conservado = [Bool](repeating: true, count: m.triangulos)
+
+        for _ in 0..<anillos {
+            let antes = conservado
+            for t in 0..<m.triangulos where antes[t] {
+                let vivos = vecinos[t].filter { antes[Int($0)] }.count
+                if vivos < 3 { conservado[t] = false }
+            }
+        }
+        // Nothing survived: the whole mesh is thin, keep it as it was.
+        guard conservado.contains(true) else { return m }
+
+        for _ in 0..<anillos {
+            let antes = conservado
+            for t in 0..<m.triangulos where !antes[t] {
+                if vecinos[t].contains(where: { antes[Int($0)] }) { conservado[t] = true }
+            }
+        }
+
+        var resultado = m
+        resultado.indices = []
+        resultado.indices.reserveCapacity(m.indices.count)
+        for t in 0..<m.triangulos where conservado[t] {
+            resultado.indices += [m.indices[t * 3], m.indices[t * 3 + 1], m.indices[t * 3 + 2]]
+        }
+        return resultado
     }
 
     /// Tidies the torn-paper outline where the scan ends: drops the "teeth"

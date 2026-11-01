@@ -11,7 +11,7 @@ struct Visor3D: View {
 
     var body: some View {
         ZStack {
-            Tema.fondo
+            Color(hex: 0x4A4F57)
             if let escena {
                 VistaEscena(escena: escena)
             } else if fallo {
@@ -63,7 +63,8 @@ private struct VistaEscena: UIViewRepresentable {
 
     func makeUIView(context: Context) -> SCNView {
         let vista = SCNView()
-        vista.backgroundColor = UIColor(hex: 0x12161C)
+        // Neutral grey: unscanned gaps read as "nothing here" instead of black holes.
+        vista.backgroundColor = UIColor(hex: 0x4A4F57)
         vista.allowsCameraControl = true
         vista.autoenablesDefaultLighting = true
         vista.antialiasingMode = .multisampling4X
