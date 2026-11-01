@@ -45,7 +45,7 @@ enum Texturizar {
     /// triangle's UVs on that photo, or nil if the photo can't texture it.
     static func puntaje(
         _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, normal: SIMD3<Float>,
-        foto f: Fotograma, inversa: simd_float4x4, posicion: SIMD3<Float>
+        foto f: Fotograma, inversa: simd_float4x4, posicion: SIMD3<Float>, frontalMinimo: Float = 0.2
     ) -> (puntaje: Float, uv: [Float])? {
         guard let pa = f.proyectar(a, con: inversa),
               let pb = f.proyectar(b, con: inversa),
@@ -54,7 +54,7 @@ enum Texturizar {
         guard let pm = f.proyectar(centro, con: inversa), pm.distancia < 7 else { return nil }
         let hacia = simd_normalize(posicion - centro)
         let frontal = simd_dot(normal, hacia)
-        guard frontal > 0.2 else { return nil }
+        guard frontal > frontalMinimo else { return nil }
         guard f.visible(u: pm.u, v: pm.v, distancia: pm.distancia) else { return nil }
         let bordeX = min(pm.u, Float(f.ancho) - pm.u) / Float(f.ancho)
         let bordeY = min(pm.v, Float(f.alto) - pm.v) / Float(f.alto)
@@ -86,6 +86,13 @@ enum Texturizar {
                 guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f]) else { continue }
                 lista.append((Int32(f), r.puntaje * factorNitidez[f]))
             }
+            if lista.isEmpty {
+                // Edges and corners seen only at a grazing angle: a slanted photo beats none.
+                for f in fotogramas.indices {
+                    guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f], frontalMinimo: 0.03) else { continue }
+                    lista.append((Int32(f), r.puntaje * factorNitidez[f] * 0.5))
+                }
+            }
             lista.sort { $0.puntaje > $1.puntaje }
             candidatos[t] = Array(lista.prefix(6))
         }
@@ -115,6 +122,25 @@ enum Texturizar {
             if cambios == 0 { break }
         }
         return etiqueta
+    }
+
+    /// UVs of every triangle's corners on its chosen photo (six values per
+    /// triangle, zeros for triangles without a photo).
+    static func uvs(_ malla: PiezaMalla, etiquetas: [Int32], fotogramas: [Fotograma]) -> [Float] {
+        let inversas = fotogramas.map(\.mundoACamara)
+        var resultado = [Float](repeating: 0, count: malla.triangulos * 6)
+        for t in 0..<malla.triangulos where etiquetas[t] >= 0 {
+            let f = fotogramas[Int(etiquetas[t])]
+            let w = Float(f.ancho), h = Float(f.alto)
+            for k in 0..<3 {
+                let v = malla.vertices[Int(malla.indices[t * 3 + k])]
+                let c = inversas[Int(etiquetas[t])] * SIMD4<Float>(v.0, v.1, v.2, 1)
+                let d = max(-c.z, 0.01)
+                resultado[t * 6 + k * 2] = (f.fx * c.x / d + f.cx) / w
+                resultado[t * 6 + k * 2 + 1] = (-f.fy * c.y / d + f.cy) / h
+            }
+        }
+        return resultado
     }
 
     /// Builds the textured mesh, grouping triangles by photo.
@@ -272,7 +298,7 @@ enum Texturizar {
     }
 
     /// Triangles that share an edge with each triangle.
-    private static func vecindad(_ m: PiezaMalla) -> [[Int32]] {
+    static func vecindad(_ m: PiezaMalla) -> [[Int32]] {
         var porArista: [UInt64: [Int32]] = [:]
         porArista.reserveCapacity(m.triangulos * 2)
         for t in 0..<m.triangulos {

@@ -162,7 +162,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         var fotogramas = fotogramas
         if !fotogramas.isEmpty {
             Exposicion.igualar(&fotogramas, malla: malla)
-            malla.colores = Colorear.colores(vertices: malla.vertices, normales: malla.normales, fotogramas: fotogramas)
+            let (colores, vistos) = Colorear.coloresYVistos(vertices: malla.vertices, normales: malla.normales, fotogramas: fotogramas)
+            malla.colores = Colorear.rellenar(colores, vistos: vistos, malla: malla)
         }
         let texturizada = try guardarTextura(malla, fotogramas: fotogramas, en: carpeta)
         let ply = carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
@@ -191,47 +192,29 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         return totales
     }
 
-    /// Projects the photos onto the mesh and writes `textura.bin` plus the
-    /// `textura/` folder (OBJ, MTL and the photos it uses).
+    /// Projects the photos onto the mesh, packs the pieces it uses into up to
+    /// three 4096 px texture images with blended seams, and writes `textura.bin`
+    /// plus the `textura/` folder (OBJ, MTL and those images).
     private static func guardarTextura(_ malla: PiezaMalla, fotogramas: [Fotograma], en carpeta: URL) throws -> MallaTexturizada? {
         let conFoto = fotogramas.filter { $0.archivo != nil }
         guard !conFoto.isEmpty, malla.triangulos > 0 else { return nil }
-        let texturizada = Texturizar.construir(malla, fotogramas: conFoto)
-        guard !texturizada.fotosUsadas.isEmpty else { return nil }
+        let tamanos = conFoto.map { f in f.archivo.flatMap(ImagenesIO.tamano) ?? SIMD2(f.ancho, f.alto) }
+        let etiquetas = Texturizar.etiquetas(malla, fotogramas: conFoto)
+        guard etiquetas.contains(where: { $0 >= 0 }) else { return nil }
+        let uvs = Texturizar.uvs(malla, etiquetas: etiquetas, fotogramas: conFoto)
+        let plan = Atlas.planificar(malla, etiquetas: etiquetas, uvFoto: uvs, fotogramas: conFoto, tamanos: tamanos)
 
         let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue, isDirectory: true)
         try FileManager.default.createDirectory(at: fotos, withIntermediateDirectories: true)
-        let contexto = CIContext(options: [.cacheIntermediates: false])
-        for foto in texturizada.fotosUsadas {
-            let fotograma = conFoto[Int(foto)]
-            guard let origen = fotograma.archivo else { continue }
-            let destino = fotos.appendingPathComponent(Texturizar.nombreFoto(foto))
-            try? FileManager.default.removeItem(at: destino)
-            if !copiar(origen, a: destino, ganancia: fotograma.ganancia, contexto: contexto) {
-                try FileManager.default.copyItem(at: origen, to: destino)
+        for indice in 0..<plan.numeroAtlas {
+            let imagen = autoreleasepool {
+                Atlas.hornear(plan, atlas: indice) { foto in conFoto[Int(foto)].archivo.flatMap(ImagenesIO.leer) }
             }
+            ImagenesIO.escribirJPEG(imagen, en: fotos.appendingPathComponent(Texturizar.nombreFoto(Int32(indice))))
         }
-        try Texturizar.escribirOBJ(texturizada, en: fotos)
-        try Texturizar.datos(texturizada).write(to: carpeta.appendingPathComponent(ArchivoProyecto.texturaBIN.rawValue), options: .atomic)
-        return texturizada
-    }
-
-
-    /// Copies a photo applying its exposure gain. The gain was measured on sRGB
-    /// values; Core Image works in linear light, hence the 2.2 power.
-    private static func copiar(_ origen: URL, a destino: URL, ganancia: SIMD3<Float>, contexto: CIContext) -> Bool {
-        guard simd_reduce_max(simd_abs(ganancia - 1)) > 0.01 else { return false }
-        guard let imagen = CIImage(contentsOf: origen), let filtro = CIFilter(name: "CIColorMatrix") else { return false }
-        let lineal = SIMD3<Float>(pow(ganancia.x, 2.2), pow(ganancia.y, 2.2), pow(ganancia.z, 2.2))
-        filtro.setValue(imagen, forKey: kCIInputImageKey)
-        filtro.setValue(CIVector(x: CGFloat(lineal.x), y: 0, z: 0, w: 0), forKey: "inputRVector")
-        filtro.setValue(CIVector(x: 0, y: CGFloat(lineal.y), z: 0, w: 0), forKey: "inputGVector")
-        filtro.setValue(CIVector(x: 0, y: 0, z: CGFloat(lineal.z), w: 0), forKey: "inputBVector")
-        guard let salida = filtro.outputImage else { return false }
-        return (try? contexto.writeJPEGRepresentation(
-            of: salida, to: destino, colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.85]
-        )) != nil
+        try Texturizar.escribirOBJ(plan.malla, en: fotos)
+        try Texturizar.datos(plan.malla).write(to: carpeta.appendingPathComponent(ArchivoProyecto.texturaBIN.rawValue), options: .atomic)
+        return plan.malla
     }
 
     // MARK: - ARSCNViewDelegate

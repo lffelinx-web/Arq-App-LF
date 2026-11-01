@@ -98,11 +98,55 @@ enum Colorear {
     static let sinColor: (UInt8, UInt8, UInt8) = (170, 170, 170)
 
     static func colores(vertices: [(Float, Float, Float)], normales: [(Float, Float, Float)], fotogramas: [Fotograma]) -> [(UInt8, UInt8, UInt8)] {
-        guard !fotogramas.isEmpty else { return [] }
+        coloresYVistos(vertices: vertices, normales: normales, fotogramas: fotogramas).colores
+    }
+
+    /// Spreads colour from the vertices some photo saw to the ones none did,
+    /// across the mesh's edges, so unseen corners take their surroundings' colour.
+    static func rellenar(_ colores: [(UInt8, UInt8, UInt8)], vistos: [Bool], malla: PiezaMalla) -> [(UInt8, UInt8, UInt8)] {
+        guard colores.count == malla.vertices.count, vistos.contains(true) else { return colores }
+        var vecinos = [[UInt32]](repeating: [], count: malla.vertices.count)
+        for t in 0..<malla.triangulos {
+            let v = [malla.indices[t * 3], malla.indices[t * 3 + 1], malla.indices[t * 3 + 2]]
+            for a in v { for b in v where a != b { vecinos[Int(a)].append(b) } }
+        }
+        var resultado = colores
+        var listo = vistos
+        var pendientes = (0..<colores.count).filter { !listo[$0] }
+        while !pendientes.isEmpty {
+            var nuevos: [(Int, (UInt8, UInt8, UInt8))] = []
+            for i in pendientes {
+                var suma = SIMD3<Float>.zero
+                var n: Float = 0
+                for o in vecinos[i] where listo[Int(o)] {
+                    let c = resultado[Int(o)]
+                    suma += SIMD3(Float(c.0), Float(c.1), Float(c.2))
+                    n += 1
+                }
+                if n > 0 {
+                    let m = suma / n
+                    nuevos.append((i, (UInt8(clamping: Int(m.x.rounded())), UInt8(clamping: Int(m.y.rounded())), UInt8(clamping: Int(m.z.rounded())))))
+                }
+            }
+            // Pieces no photo touched at all keep the neutral grey.
+            if nuevos.isEmpty { break }
+            for (i, c) in nuevos {
+                resultado[i] = c
+                listo[i] = true
+            }
+            pendientes = pendientes.filter { !listo[$0] }
+        }
+        return resultado
+    }
+
+    /// Vertex colours and whether any photo saw each vertex.
+    static func coloresYVistos(vertices: [(Float, Float, Float)], normales: [(Float, Float, Float)], fotogramas: [Fotograma]) -> (colores: [(UInt8, UInt8, UInt8)], vistos: [Bool]) {
+        guard !fotogramas.isEmpty else { return ([], []) }
         let inversas = fotogramas.map(\.mundoACamara)
         let posiciones = fotogramas.map(\.posicion)
         let conNormales = normales.count == vertices.count
         var resultado = [(UInt8, UInt8, UInt8)](repeating: sinColor, count: vertices.count)
+        var vistos = [Bool](repeating: false, count: vertices.count)
 
         for i in vertices.indices {
             let v = vertices[i]
@@ -132,8 +176,9 @@ enum Colorear {
             if let elegido {
                 let c = fotogramas[elegido.0].color(u: elegido.1, v: elegido.2)
                 resultado[i] = (UInt8(clamping: Int(c.x.rounded())), UInt8(clamping: Int(c.y.rounded())), UInt8(clamping: Int(c.z.rounded())))
+                vistos[i] = true
             }
         }
-        return resultado
+        return (resultado, vistos)
     }
 }

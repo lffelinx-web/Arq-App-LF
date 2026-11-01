@@ -75,9 +75,14 @@ enum EscenaMalla {
         return escena
     }
 
-    /// Loads `textura.bin` and its photos, shrunk to `lado` pixels so a scan with
-    /// many photos fits comfortably in the GPU.
-    static func escenaTexturizada(_ url: URL, lado: Int = 1024) -> SCNScene? {
+    /// Loads `textura.bin` and its images. Scans from before the atlas used one
+    /// image per photo (many of them), so those are shrunk to fit in the GPU.
+    static func escenaTexturizada(_ url: URL) -> SCNScene? {
+        guard let datos = try? Data(contentsOf: url), let malla = try? Texturizar.leer(datos) else { return nil }
+        return escenaTexturizada(url, lado: malla.grupos.count <= 4 ? 4096 : 1024)
+    }
+
+    static func escenaTexturizada(_ url: URL, lado: Int) -> SCNScene? {
         guard let datos = try? Data(contentsOf: url), let malla = try? Texturizar.leer(datos) else { return nil }
         let carpeta = url.deletingLastPathComponent().appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue)
         return escena(malla) { foto in

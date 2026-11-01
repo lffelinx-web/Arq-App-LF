@@ -12,7 +12,7 @@ enum LimpiezaMalla {
 
     /// Merges vertices closer than `tolerancia` (metres). ARKit hands the mesh
     /// over in pieces whose borders don't share vertices, which leaves thin cracks.
-    static func soldar(_ m: PiezaMalla, tolerancia: Float = 0.008) -> PiezaMalla {
+    static func soldar(_ m: PiezaMalla, tolerancia: Float = 0.01) -> PiezaMalla {
         var celda: [SIMD3<Int32>: UInt32] = [:]
         celda.reserveCapacity(m.vertices.count)
         var nuevos: [(Float, Float, Float)] = []
@@ -91,9 +91,10 @@ enum LimpiezaMalla {
         return resultado
     }
 
-    /// Closes holes whose border has at most `maximoAristas` edges and
-    /// `maximoPerimetro` metres, with a fan around their centre.
-    static func rellenarHuecos(_ m: PiezaMalla, maximoAristas: Int = 40, maximoPerimetro: Float = 1.2) -> PiezaMalla {
+    /// Closes holes with a fan around their centre: small ones (up to
+    /// `maximoPerimetro` metres around) and long thin cracks (up to `maximaArea`
+    /// square metres), with at most `maximoAristas` edges.
+    static func rellenarHuecos(_ m: PiezaMalla, maximoAristas: Int = 120, maximoPerimetro: Float = 1.2, maximaArea: Float = 0.03) -> PiezaMalla {
         func clave(_ a: UInt32, _ b: UInt32) -> UInt64 { UInt64(a) << 32 | UInt64(b) }
         var dirigidas = Set<UInt64>()
         dirigidas.reserveCapacity(m.indices.count)
@@ -136,7 +137,13 @@ enum LimpiezaMalla {
             guard cerrado, bucle.count >= 3 else { continue }
             var perimetro: Float = 0
             for i in bucle.indices { perimetro += simd_distance(punto(bucle[i]), punto(bucle[(i + 1) % bucle.count])) }
-            guard perimetro <= maximoPerimetro else { continue }
+            var vectorArea = SIMD3<Float>.zero
+            let centroBucle = bucle.map(punto).reduce(.zero, +) / Float(bucle.count)
+            for i in bucle.indices {
+                vectorArea += simd_cross(punto(bucle[i]) - centroBucle, punto(bucle[(i + 1) % bucle.count]) - centroBucle)
+            }
+            let area = simd_length(vectorArea) / 2
+            guard (perimetro <= maximoPerimetro && bucle.count <= 40) || area <= maximaArea else { continue }
 
             if bucle.count == 3 {
                 resultado.indices += [bucle[0], bucle[1], bucle[2]]
