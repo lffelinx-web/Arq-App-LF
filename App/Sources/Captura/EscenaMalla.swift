@@ -1,3 +1,4 @@
+import ImageIO
 import SceneKit
 import UIKit
 
@@ -36,11 +37,70 @@ enum EscenaMalla {
         return SCNNode(geometry: geometria)
     }
 
-    private static func fuente(_ valores: [Float], semantica: SCNGeometrySource.Semantic, cuenta: Int) -> SCNGeometrySource {
+    /// Photo-textured scene. `textura` gives each photo's image (a CGImage for the
+    /// viewer, a file URL for exporting); photos it can't give stay grey.
+    static func escena(_ malla: MallaTexturizada, textura: (Int32) -> Any?) -> SCNScene {
+        let n = malla.esquinas
+        let fuentes = [
+            fuente(malla.posiciones, semantica: .vertex, cuenta: n),
+            fuente(malla.normales, semantica: .normal, cuenta: n),
+            fuente(malla.uvs, semantica: .texcoord, cuenta: n, componentes: 2),
+        ]
+        var elementos: [SCNGeometryElement] = []
+        var materiales: [SCNMaterial] = []
+        for grupo in malla.grupos where grupo.triangulos > 0 {
+            let inicio = UInt32(grupo.inicio) * 3
+            let indices = (0..<UInt32(grupo.triangulos) * 3).map { inicio + $0 }
+            let datos = indices.withUnsafeBufferPointer { Data(buffer: $0) }
+            elementos.append(SCNGeometryElement(data: datos, primitiveType: .triangles, primitiveCount: Int(grupo.triangulos), bytesPerIndex: 4))
+
+            let material = SCNMaterial()
+            material.isDoubleSided = true
+            if grupo.foto >= 0, let imagen = textura(grupo.foto) {
+                material.diffuse.contents = imagen
+                material.diffuse.wrapS = .clamp
+                material.diffuse.wrapT = .clamp
+                material.diffuse.mipFilter = .linear
+                material.lightingModel = .constant
+            } else {
+                material.diffuse.contents = UIColor(white: 0.67, alpha: 1)
+                material.lightingModel = .blinn
+            }
+            materiales.append(material)
+        }
+        let geometria = SCNGeometry(sources: fuentes, elements: elementos)
+        geometria.materials = materiales
+        let escena = SCNScene()
+        escena.rootNode.addChildNode(SCNNode(geometry: geometria))
+        return escena
+    }
+
+    /// Loads `textura.bin` and its photos, shrunk to `lado` pixels so a scan with
+    /// many photos fits comfortably in the GPU.
+    static func escenaTexturizada(_ url: URL, lado: Int = 1024) -> SCNScene? {
+        guard let datos = try? Data(contentsOf: url), let malla = try? Texturizar.leer(datos) else { return nil }
+        let carpeta = url.deletingLastPathComponent().appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue)
+        return escena(malla) { foto in
+            miniatura(carpeta.appendingPathComponent(Texturizar.nombreFoto(foto)), lado: lado)
+        }
+    }
+
+    static func miniatura(_ url: URL, lado: Int) -> CGImage? {
+        guard let origen = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let opciones = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: lado,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ] as CFDictionary
+        return CGImageSourceCreateThumbnailAtIndex(origen, 0, opciones)
+    }
+
+    private static func fuente(_ valores: [Float], semantica: SCNGeometrySource.Semantic, cuenta: Int, componentes: Int = 3) -> SCNGeometrySource {
         let datos = valores.withUnsafeBufferPointer { Data(buffer: $0) }
         return SCNGeometrySource(
             data: datos, semantic: semantica, vectorCount: cuenta, usesFloatComponents: true,
-            componentsPerVector: 3, bytesPerComponent: MemoryLayout<Float>.size, dataOffset: 0, dataStride: MemoryLayout<Float>.size * 3
+            componentsPerVector: componentes, bytesPerComponent: MemoryLayout<Float>.size, dataOffset: 0,
+            dataStride: MemoryLayout<Float>.size * componentes
         )
     }
 }

@@ -18,6 +18,8 @@ struct Fotograma {
     var profundidad: [Float] = []
     var anchoProfundidad = 0
     var altoProfundidad = 0
+    /// Full-resolution JPEG of this photo, used as texture.
+    var archivo: URL?
 
     var mundoACamara: simd_float4x4 { camaraAMundo.inverse }
     var posicion: SIMD3<Float> { SIMD3(camaraAMundo.columns.3.x, camaraAMundo.columns.3.y, camaraAMundo.columns.3.z) }

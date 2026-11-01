@@ -39,7 +39,7 @@ struct DetalleView: View {
 
     private var modelo: URL? {
         if proyecto.tipo == .malla {
-            for archivo in [ArchivoProyecto.mallaPLY, .mallaOBJ] where almacen.existe(archivo, de: proyecto) {
+            for archivo in [ArchivoProyecto.texturaBIN, .mallaPLY, .mallaOBJ] where almacen.existe(archivo, de: proyecto) {
                 return almacen.url(archivo, de: proyecto)
             }
         }
@@ -171,6 +171,10 @@ struct DetalleView: View {
         for (archivo, nombre) in copias where almacen.existe(archivo, de: proyecto) {
             if let copia = Exportacion.copia(almacen.url(archivo, de: proyecto), como: nombre, en: carpeta) { urls.append(copia) }
         }
+        if almacen.existe(.carpetaTextura, de: proyecto),
+           let zip = Exportacion.zip(almacen.url(.carpetaTextura, de: proyecto), como: "\(base)-texturizado.zip", en: carpeta) {
+            urls.insert(zip, at: 0)
+        }
         if proyecto.tipo == .medidas, !proyecto.medidas.isEmpty,
            let csv = Exportacion.texto(CSV.medidas(proyecto.medidas), como: "\(base)-medidas.csv", en: carpeta) {
             urls.append(csv)
@@ -185,6 +189,7 @@ struct DetalleView: View {
         case "csv": return "tablecells"
         case "json": return "curlybraces"
         case "dxf": return "pencil.and.ruler"
+        case "zip": return "photo.on.rectangle.angled"
         default: return "cube"
         }
     }
@@ -285,7 +290,11 @@ private struct HojaDatos: View {
             VStack(spacing: 10) {
                 FilaDato(titulo: "Vértices", valor: proyecto.vertices.formatted(), icono: "circle.grid.3x3")
                 FilaDato(titulo: "Triángulos", valor: proyecto.triangulos.formatted(), icono: "triangle")
-                FilaDato(titulo: "Color", valor: (proyecto.fotos ?? 0) > 0 ? "\(proyecto.fotos ?? 0) fotos" : "Sin color", icono: "paintpalette")
+                FilaDato(
+                    titulo: almacen.existe(.texturaBIN, de: proyecto) ? "Textura" : "Color",
+                    valor: (proyecto.fotos ?? 0) > 0 ? "\(proyecto.fotos ?? 0) fotos" : "Sin color",
+                    icono: "photo.stack"
+                )
                 if let tamano = try? almacen.url(.mallaOBJ, de: proyecto).resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     FilaDato(titulo: "Archivo OBJ", valor: ByteCountFormatter.string(fromByteCount: Int64(tamano), countStyle: .file), icono: "doc")
                 }

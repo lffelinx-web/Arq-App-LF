@@ -6,17 +6,24 @@ import SceneKit
 import UIKit
 
 /// Free-form LiDAR scan: ARKit rebuilds the surfaces around you as a triangle
-/// mesh while photos are taken along the way; on saving, the photos paint the
-/// mesh and it is written as PLY and OBJ with colour (and USDZ when possible).
+/// mesh while sharp photos are taken along the way. On saving, the photos are
+/// projected onto the mesh as textures (textured OBJ/MTL and USDZ), and also
+/// paint its vertices for the PLY and plain OBJ copies.
 final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSessionDelegate {
     let vista = ARSCNView(frame: .zero)
     @Published private(set) var triangulos = 0
     @Published private(set) var aviso = "Mueve el iPhone despacio para cubrir todo el espacio."
     @Published private(set) var escaneando = false
-    /// Photos kept to colour the mesh.
+    /// Photos kept to texture the mesh.
     @Published private(set) var fotos = 0
 
-    static let maximoFotos = 90
+    static let maximoFotos = 80
+    /// Width of the texture photos and of the small copy used for vertex colours.
+    static let anchoTextura: Float = 1440
+    static let anchoColor: Float = 320
+    /// Photos are written here while scanning and moved into the project on saving.
+    let carpetaFotos = FileManager.default.temporaryDirectory.appendingPathComponent("Fotos-\(UUID().uuidString)", isDirectory: true)
+    private var fotoAnterior: (transform: simd_float4x4, tiempo: TimeInterval)?
     private let colaFotos = DispatchQueue(label: "com.lfaz.arq.fotos", qos: .utility)
     private let candado = NSLock()
     private var fotogramas: [Fotograma] = []
@@ -38,10 +45,15 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     override init() {
         super.init()
+        try? FileManager.default.createDirectory(at: carpetaFotos, withIntermediateDirectories: true)
         vista.delegate = self
         vista.session.delegate = self
         vista.automaticallyUpdatesLighting = true
         vista.rendersContinuously = true
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: carpetaFotos)
     }
 
     private func configuracion() -> ARWorldTrackingConfiguration {
@@ -61,6 +73,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         candado.lock()
         fotogramas.removeAll()
         candado.unlock()
+        try? FileManager.default.removeItem(at: carpetaFotos)
+        try? FileManager.default.createDirectory(at: carpetaFotos, withIntermediateDirectories: true)
         ultimaFoto = nil
         fotos = 0
         vista.session.run(configuracion(), options: [.resetTracking, .removeExistingAnchors])
@@ -102,6 +116,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
                 piezas[i].colores = Colorear.colores(vertices: piezas[i].vertices, normales: piezas[i].normales, fotogramas: fotogramas)
             }
         }
+        let texturizada = try guardarTextura(Texturizar.unir(piezas), fotogramas: fotogramas, en: carpeta)
         let ply = carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
         let totales = try PLY.escribir(piezas, en: ply)
         let obj = carpeta.appendingPathComponent(ArchivoProyecto.mallaOBJ.rawValue)
@@ -110,14 +125,43 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             try? captura.reducida(a: 1600).jpegData(compressionQuality: 0.85)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.foto.rawValue))
             try? captura.reducida(a: 400).jpegData(compressionQuality: 0.8)?.write(to: carpeta.appendingPathComponent(ArchivoProyecto.miniatura.rawValue))
         }
-        // USDZ opens in Quick Look and AR. SceneKit keeps the vertex colours;
-        // ModelIO from the OBJ is the fallback.
+        // USDZ opens in Quick Look and AR: textured when possible, otherwise with
+        // vertex colours, and ModelIO from the OBJ as the last resort.
         let usdz = carpeta.appendingPathComponent(ArchivoProyecto.modeloUSDZ.rawValue)
-        let escrito = (try? PLY.leer(ply)).map { EscenaMalla.escena($0).write(to: usdz, options: nil, delegate: nil, progressHandler: nil) } ?? false
+        var escrito = false
+        if let texturizada {
+            let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue)
+            let escena = EscenaMalla.escena(texturizada) { foto in fotos.appendingPathComponent(Texturizar.nombreFoto(foto)) }
+            escrito = escena.write(to: usdz, options: nil, delegate: nil, progressHandler: nil)
+        }
+        if !escrito {
+            escrito = (try? PLY.leer(ply)).map { EscenaMalla.escena($0).write(to: usdz, options: nil, delegate: nil, progressHandler: nil) } ?? false
+        }
         if !escrito, MDLAsset.canExportFileExtension("usdz") {
             try? MDLAsset(url: obj).export(to: usdz)
         }
         return totales
+    }
+
+    /// Projects the photos onto the mesh and writes `textura.bin` plus the
+    /// `textura/` folder (OBJ, MTL and the photos it uses).
+    private static func guardarTextura(_ malla: PiezaMalla, fotogramas: [Fotograma], en carpeta: URL) throws -> MallaTexturizada? {
+        let conFoto = fotogramas.filter { $0.archivo != nil }
+        guard !conFoto.isEmpty, malla.triangulos > 0 else { return nil }
+        let texturizada = Texturizar.construir(malla, fotogramas: conFoto)
+        guard !texturizada.fotosUsadas.isEmpty else { return nil }
+
+        let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue, isDirectory: true)
+        try FileManager.default.createDirectory(at: fotos, withIntermediateDirectories: true)
+        for foto in texturizada.fotosUsadas {
+            guard let origen = conFoto[Int(foto)].archivo else { continue }
+            let destino = fotos.appendingPathComponent(Texturizar.nombreFoto(foto))
+            try? FileManager.default.removeItem(at: destino)
+            try FileManager.default.copyItem(at: origen, to: destino)
+        }
+        try Texturizar.escribirOBJ(texturizada, en: fotos)
+        try Texturizar.datos(texturizada).write(to: carpeta.appendingPathComponent(ArchivoProyecto.texturaBIN.rawValue), options: .atomic)
+        return texturizada
     }
 
 
@@ -160,10 +204,19 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     /// Keeps a photo each time the camera has moved or turned enough, so the
     /// whole space ends up covered without filling the memory.
     private func tomarFotoSiConviene(_ frame: ARFrame) {
-        guard capturando, !procesandoFoto, case .normal = frame.camera.trackingState else { return }
-        guard Date().timeIntervalSince(ultimaFotoFecha) > 0.4 else { return }
         let camara = frame.camera
         let t = camara.transform
+        // Skip blurry photos: only shoot while the iPhone is almost still.
+        let anterior = fotoAnterior
+        fotoAnterior = (t, frame.timestamp)
+        guard capturando, !procesandoFoto, case .normal = camara.trackingState else { return }
+        guard Date().timeIntervalSince(ultimaFotoFecha) > 0.4 else { return }
+        if let anterior, frame.timestamp > anterior.tiempo {
+            let dt = Float(frame.timestamp - anterior.tiempo)
+            let velocidad = simd_distance(t.posicion, anterior.transform.posicion) / dt
+            let giro = acos(min(1, max(-1, simd_dot(-t.columns.2.xyz, -anterior.transform.columns.2.xyz)))) / dt
+            guard velocidad < 0.35, giro < 0.5 else { return }
+        }
         if let anterior = ultimaFoto {
             let movimiento = simd_distance(t.posicion, anterior.posicion)
             let giro = acos(min(1, max(-1, simd_dot(-t.columns.2.xyz, -anterior.columns.2.xyz))))
@@ -179,9 +232,10 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         ultimaFotoFecha = Date()
         let imagen = frame.capturedImage
         let profundidad = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap
+        let archivo = carpetaFotos.appendingPathComponent("captura-\(Int(frame.timestamp * 1000)).jpg")
         colaFotos.async { [weak self] in
             guard let self else { return }
-            let fotograma = Self.fotograma(imagen: imagen, profundidad: profundidad, camara: camara, contexto: self.contextoCI)
+            let fotograma = Self.fotograma(imagen: imagen, profundidad: profundidad, camara: camara, contexto: self.contextoCI, archivo: archivo)
             self.candado.lock()
             if let fotograma { self.fotogramas.append(fotograma) }
             let total = self.fotogramas.count
@@ -193,15 +247,24 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         }
     }
 
-    /// Shrinks the camera image to 480 px wide and copies the LiDAR depth.
-    private static func fotograma(imagen: CVPixelBuffer, profundidad: CVPixelBuffer?, camara: ARCamera, contexto: CIContext) -> Fotograma? {
+    /// Saves the photo as a 1440 px JPEG for the texture, keeps a small copy for
+    /// the vertex colours and copies the LiDAR depth.
+    private static func fotograma(imagen: CVPixelBuffer, profundidad: CVPixelBuffer?, camara: ARCamera, contexto: CIContext, archivo: URL) -> Fotograma? {
         let anchoOriginal = CVPixelBufferGetWidth(imagen)
         let altoOriginal = CVPixelBufferGetHeight(imagen)
         guard anchoOriginal > 0 else { return nil }
-        let escala = Float(480) / Float(anchoOriginal)
+        let original = CIImage(cvPixelBuffer: imagen)
+        let escalaTextura = CGFloat(min(1, anchoTextura / Float(anchoOriginal)))
+        let grande = original.transformed(by: CGAffineTransform(scaleX: escalaTextura, y: escalaTextura))
+        let guardada = (try? contexto.writeJPEGRepresentation(
+            of: grande, to: archivo, colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.82]
+        )) != nil
+
+        let escala = anchoColor / Float(anchoOriginal)
         let ancho = Int(Float(anchoOriginal) * escala)
         let alto = Int(Float(altoOriginal) * escala)
-        let reducida = CIImage(cvPixelBuffer: imagen).transformed(by: CGAffineTransform(scaleX: CGFloat(escala), y: CGFloat(escala)))
+        let reducida = original.transformed(by: CGAffineTransform(scaleX: CGFloat(escala), y: CGFloat(escala)))
         guard let cg = contexto.createCGImage(reducida, from: CGRect(x: 0, y: 0, width: ancho, height: alto)) else { return nil }
 
         var rgba = [UInt8](repeating: 0, count: ancho * alto * 4)
@@ -222,6 +285,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             cx: k.columns.2.x * escala, cy: k.columns.2.y * escala,
             ancho: ancho, alto: alto, rgba: rgba
         )
+        fotograma.archivo = guardada ? archivo : nil
 
         if let profundidad, CVPixelBufferGetPixelFormatType(profundidad) == kCVPixelFormatType_DepthFloat32 {
             CVPixelBufferLockBaseAddress(profundidad, .readOnly)

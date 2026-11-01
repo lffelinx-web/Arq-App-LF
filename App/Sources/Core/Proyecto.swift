@@ -37,6 +37,9 @@ enum ArchivoProyecto: String, CaseIterable {
     case modeloUSDZ = "modelo.usdz"
     case mallaOBJ = "malla.obj"
     case mallaPLY = "malla.ply"
+    /// Textured mesh for the viewer; its photos and the OBJ/MTL live in `textura/`.
+    case texturaBIN = "textura.bin"
+    case carpetaTextura = "textura"
     case plano = "plano.json"
     case miniatura = "miniatura.jpg"
     case foto = "foto.jpg"

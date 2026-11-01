@@ -48,6 +48,19 @@ enum Exportacion {
         }
     }
 
+    /// Zips a folder (the textured OBJ with its MTL and photos) using the system's
+    /// own archiver, the one the Files app uses for "Compress".
+    static func zip(_ origen: URL, como nombre: String, en carpeta: URL) -> URL? {
+        let destino = carpeta.appendingPathComponent(nombre)
+        try? FileManager.default.removeItem(at: destino)
+        var resultado: URL?
+        var error: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: origen, options: .forUploading, error: &error) { comprimido in
+            if (try? FileManager.default.copyItem(at: comprimido, to: destino)) != nil { resultado = destino }
+        }
+        return error == nil ? resultado : nil
+    }
+
     static func texto(_ contenido: String, como nombre: String, en carpeta: URL) -> URL? {
         let destino = carpeta.appendingPathComponent(nombre)
         do {

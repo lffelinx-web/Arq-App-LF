@@ -147,7 +147,7 @@ struct PantallaMalla: View {
                     cerrar()
                 }
                 Pastilla(texto: escaner.escaneando ? escaner.aviso : "Escaneo en pausa")
-                Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos · \(escaner.fotos) fotos para color")
+                Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos · \(escaner.fotos) fotos para textura")
                 Spacer()
                 HStack(spacing: 18) {
                     BotonCaptura(icono: "arrow.counterclockwise", titulo: "Reiniciar") { escaner.iniciar() }
@@ -171,7 +171,7 @@ struct PantallaMalla: View {
                 .padding(.bottom, 24)
             }
             .padding(.horizontal, 16)
-            if guardando { Guardando() }
+            if guardando { Guardando(texto: "Creando la textura…\nPuede tardar unos segundos.") }
         }
         .onAppear { escaner.iniciar() }
         .alert("Guardar escaneo", isPresented: $pidiendoNombre) {
@@ -344,12 +344,14 @@ private struct Mira: View {
 }
 
 private struct Guardando: View {
+    var texto = "Guardando…"
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55).ignoresSafeArea()
             VStack(spacing: 12) {
                 ProgressView().tint(.white).scaleEffect(1.4)
-                Text("Guardando…").font(.headline).foregroundStyle(.white)
+                Text(texto).font(.headline).foregroundStyle(.white).multilineTextAlignment(.center)
             }
         }
     }

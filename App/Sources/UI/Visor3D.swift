@@ -31,7 +31,9 @@ struct Visor3D: View {
     nonisolated static func cargar(_ url: URL) -> SCNScene? {
         let escena: SCNScene?
         let extension_ = url.pathExtension.lowercased()
-        if extension_ == "ply" {
+        if extension_ == "bin" {
+            escena = EscenaMalla.escenaTexturizada(url)
+        } else if extension_ == "ply" {
             escena = (try? PLY.leer(url)).map(EscenaMalla.escena)
         } else if extension_ == "obj" {
             escena = SCNScene(mdlAsset: MDLAsset(url: url))
