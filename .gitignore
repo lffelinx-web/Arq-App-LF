@@ -1,0 +1,15 @@
+*.cer
+*.mobileprovision
+*.p12
+*.p8
+*.xcodeproj/
+*.xcresult/
+*.xcworkspace/
+.DS_Store
+Vendor/
+build-tests/
+build/
+entrega/
+fastlane/README.md
+fastlane/report.xml
+SourcePackages/

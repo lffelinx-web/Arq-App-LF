@@ -1,0 +1,100 @@
+name: Compilar Arq LF
+on:
+  push:
+    branches-ignore: [certificados]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-26-intel
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Caché de paquetes Swift
+        uses: actions/cache@v4
+        with:
+          path: SourcePackages
+          key: spm-${{ hashFiles('project.yml') }}
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+      - name: Generar proyecto
+        run: xcodegen generate
+      - name: Probar en simulador
+        shell: bash
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for group in d["devices"].values() for v in group if v["name"].startswith("iPhone")))')
+          xcodebuild -project ArqLF.xcodeproj -scheme ArqLF -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build-tests -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test
+      - name: Compilar IPA sin firmar
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild -project ArqLF.xcodeproj -scheme ArqLF -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation CODE_SIGNING_ALLOWED=NO build
+          mkdir -p entrega/Payload
+          cp -R build/Build/Products/Release-iphoneos/ArqLF.app entrega/Payload/
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' entrega/Payload/ArqLF.app/Info.plist)
+          cd entrega && zip -qry "Arq-LF-$VERSION-sin-firmar.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arq-LF-sin-firmar
+          path: entrega/*.ipa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Resultados-XCTest
+          path: TestResults.xcresult
+          if-no-files-found: ignore
+  testflight:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26-intel
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      BUILD_NUMBER: ${{ github.run_number }}${{ github.run_attempt }}
+      MATCH_GIT_URL: https://github.com/${{ github.repository }}.git
+      FASTLANE_SKIP_UPDATE_CHECK: '1'
+      FASTLANE_HIDE_CHANGELOG: '1'
+      FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: '120'
+      FASTLANE_XCODEBUILD_SETTINGS_RETRIES: '6'
+    steps:
+      - name: Comprobar credenciales de Apple
+        id: credenciales
+        shell: bash
+        run: |
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then echo "::notice::Falta el secret $name; se omite la subida a TestFlight."; echo "listo=no" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "listo=si" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.credenciales.outputs.listo == 'si'
+      - name: Preparar proyecto y fastlane
+        if: steps.credenciales.outputs.listo == 'si'
+        shell: bash
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          brew install xcodegen
+          command -v fastlane >/dev/null || brew install fastlane
+          xcodegen generate
+          # The certificate is encrypted with a password derived from the API key, so no extra secret is needed.
+          PASSWORD=$(printf '%s' "$ASC_KEY_P8" | shasum -a 256 | cut -d' ' -f1)
+          AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$PASSWORD"; echo "::add-mask::$AUTH"
+          echo "MATCH_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          echo "MATCH_GIT_AUTH=$AUTH" >> "$GITHUB_ENV"
+      - name: Firmar y subir a TestFlight
+        if: steps.credenciales.outputs.listo == 'si'
+        run: fastlane beta
+      - name: Aviso
+        if: steps.credenciales.outputs.listo == 'si'
+        run: echo "::notice::Compilación $BUILD_NUMBER enviada a App Store Connect. Aparecerá en TestFlight cuando Apple termine de procesarla."

@@ -1,0 +1,44 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Firma con un certificado de distribución guardado y sube la app a TestFlight"
+  lane :beta do
+    setup_ci
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_KEY_P8"]
+    )
+    # match keeps one distribution certificate and App Store profile, encrypted,
+    # in the `certificados` branch so every run reuses them instead of creating new ones.
+    match(
+      type: "appstore",
+      app_identifier: "com.lfaz.arq",
+      team_id: ENV["APPLE_TEAM_ID"],
+      api_key: api_key,
+      storage_mode: "git",
+      git_url: ENV["MATCH_GIT_URL"],
+      git_branch: "certificados",
+      git_basic_authorization: ENV["MATCH_GIT_AUTH"],
+      readonly: false
+    )
+    update_code_signing_settings(
+      path: "ArqLF.xcodeproj",
+      targets: ["ArqLF"],
+      use_automatic_signing: false,
+      team_id: ENV["APPLE_TEAM_ID"],
+      code_sign_identity: "Apple Distribution",
+      profile_name: ENV["sigh_com.lfaz.arq_appstore_profile-name"]
+    )
+    build_app(
+      project: "ArqLF.xcodeproj",
+      scheme: "ArqLF",
+      configuration: "Release",
+      export_method: "app-store",
+      xcargs: "CURRENT_PROJECT_VERSION=#{ENV['BUILD_NUMBER']}",
+      output_directory: "entrega",
+      output_name: "ArqLF.ipa"
+    )
+    upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: true)
+  end
+end
