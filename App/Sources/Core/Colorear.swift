@@ -24,6 +24,20 @@ struct Fotograma {
     var ganancia = SIMD3<Float>(repeating: 1)
     /// Sharpness (variance of the Laplacian); blurry photos score low.
     var nitidez: Float = 1
+    /// People in the photo (1 = person), same size as `rgba`; empty when none were found.
+    var personas: [UInt8] = []
+
+    /// Whether there is a person at (or right next to) this pixel.
+    func esPersona(u: Float, v: Float) -> Bool {
+        guard personas.count == ancho * alto, ancho > 0 else { return false }
+        let cx = Int(u), cy = Int(v)
+        for y in max(0, cy - 1)...min(alto - 1, cy + 1) {
+            for x in max(0, cx - 1)...min(ancho - 1, cx + 1) where personas[y * ancho + x] > 0 {
+                return true
+            }
+        }
+        return false
+    }
 
     var mundoACamara: simd_float4x4 { camaraAMundo.inverse }
     var posicion: SIMD3<Float> { SIMD3(camaraAMundo.columns.3.x, camaraAMundo.columns.3.y, camaraAMundo.columns.3.z) }
@@ -200,6 +214,7 @@ enum Colorear {
                     if frontal < 0.15 { continue }
                 }
                 guard f.visible(u: u, v: vv, distancia: d) else { continue }
+                guard !f.esPersona(u: u, v: vv) else { continue }
                 // Prefer the image centre, where the lens is sharpest.
                 let bordeX = min(u, Float(f.ancho) - u) / Float(f.ancho)
                 let bordeY = min(vv, Float(f.alto) - vv) / Float(f.alto)

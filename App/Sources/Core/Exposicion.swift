@@ -28,7 +28,7 @@ enum Exposicion {
             for (k, f) in fotogramas.enumerated() {
                 guard let pr = f.proyectar(p, con: inversas[k]) else { continue }
                 if conNormales, simd_dot(n, simd_normalize(posiciones[k] - p)) < 0.3 { continue }
-                guard f.visible(u: pr.u, v: pr.v, distancia: pr.distancia) else { continue }
+                guard f.visible(u: pr.u, v: pr.v, distancia: pr.distancia), !f.esPersona(u: pr.u, v: pr.v) else { continue }
                 let c = f.colorCrudo(u: pr.u, v: pr.v)
                 // Ignore near-black and blown-out samples: they carry no exposure information.
                 guard c.min() > 8, c.max() < 250 else { continue }

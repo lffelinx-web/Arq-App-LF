@@ -118,6 +118,7 @@ enum LimpiezaMalla {
         var sumaNormales: [SIMD3<Float>] = []
         var mapa = [UInt32](repeating: 0, count: m.vertices.count)
         let conNormales = m.normales.count == m.vertices.count
+        var clases: [UInt8] = []
 
         for (i, v) in m.vertices.enumerated() {
             let clave = SIMD3<Int32>(Int32((v.0 / tolerancia).rounded()), Int32((v.1 / tolerancia).rounded()), Int32((v.2 / tolerancia).rounded()))
@@ -131,6 +132,7 @@ enum LimpiezaMalla {
                 mapa[i] = indice
                 nuevos.append(v)
                 sumaNormales.append(n)
+                if m.conClases { clases.append(m.clases[i]) }
             }
         }
 
@@ -152,7 +154,7 @@ enum LimpiezaMalla {
             let u = largo > 1e-6 ? n / largo : SIMD3<Float>(0, 1, 0)
             return (u.x, u.y, u.z)
         } : []
-        return PiezaMalla(vertices: nuevos, normales: normales, indices: indices)
+        return PiezaMalla(vertices: nuevos, normales: normales, indices: indices, clases: clases)
     }
 
     /// Removes connected pieces with fewer than `minimo` triangles (floating
@@ -251,6 +253,7 @@ enum LimpiezaMalla {
             let centro = bucle.map(punto).reduce(.zero, +) / Float(bucle.count)
             let indiceCentro = UInt32(resultado.vertices.count)
             resultado.vertices.append((centro.x, centro.y, centro.z))
+            if m.conClases { resultado.clases.append(m.clases[Int(bucle[0])]) }
             if conNormales {
                 let suma = bucle.reduce(SIMD3<Float>.zero) { s, i in s + SIMD3(m.normales[Int(i)].0, m.normales[Int(i)].1, m.normales[Int(i)].2) }
                 let n = simd_length(suma) > 1e-6 ? simd_normalize(suma) : SIMD3<Float>(0, 1, 0)
@@ -276,6 +279,7 @@ enum LimpiezaMalla {
                 resultado.vertices.append(m.vertices[Int(i)])
                 if conNormales { resultado.normales.append(m.normales[Int(i)]) }
                 if conColor { resultado.colores.append(m.colores[Int(i)]) }
+                if m.conClases { resultado.clases.append(m.clases[Int(i)]) }
             }
             resultado.indices.append(UInt32(nuevo[Int(i)]))
         }

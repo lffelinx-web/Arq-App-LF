@@ -34,11 +34,13 @@ enum Texturizar {
         var total = PiezaMalla(vertices: [], normales: [], indices: [])
         let conNormales = piezas.allSatisfy { $0.normales.count == $0.vertices.count }
         let conColor = piezas.allSatisfy(\.conColor)
+        let conClases = piezas.allSatisfy(\.conClases)
         for pieza in piezas {
             let base = UInt32(total.vertices.count)
             total.vertices += pieza.vertices
             if conNormales { total.normales += pieza.normales }
             if conColor { total.colores += pieza.colores }
+            if conClases { total.clases += pieza.clases }
             total.indices += pieza.indices.map { $0 + base }
         }
         return total
@@ -59,6 +61,8 @@ enum Texturizar {
         let frontal = simd_dot(normal, hacia)
         guard frontal > frontalMinimo else { return nil }
         guard f.visible(u: pm.u, v: pm.v, distancia: pm.distancia) else { return nil }
+        // Never paint a person onto the room.
+        for p in [pa, pb, pc, pm] where f.esPersona(u: p.u, v: p.v) { return nil }
         var penalizacion: Float = 1
         if estricto {
             // Every corner must be in plain sight, or the photo paints part of

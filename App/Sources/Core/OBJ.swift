@@ -8,9 +8,12 @@ struct PiezaMalla {
     var indices: [UInt32]
     /// Per-vertex colour taken from the camera; empty for an uncoloured scan.
     var colores: [(UInt8, UInt8, UInt8)] = []
+    /// Per-vertex ARKit surface class (see `Planos`); empty when unknown.
+    var clases: [UInt8] = []
 
     var triangulos: Int { indices.count / 3 }
     var conColor: Bool { !colores.isEmpty && colores.count == vertices.count }
+    var conClases: Bool { !clases.isEmpty && clases.count == vertices.count }
 }
 
 /// Writes meshes as Wavefront OBJ, which SketchUp, Blender, Revit and

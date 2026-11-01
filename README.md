@@ -56,3 +56,8 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 - Se eligen de 10 a 300 fotos de la galería (mejor entre 20 y 200) y el iPhone arma un modelo USDZ texturizado con Object Capture de Apple (`PhotogrammetrySession`), sin Mac ni internet.
 - Opción para recortar solo el objeto (quita el fondo) o conservar todo (rincones, fachadas).
 - La escala es aproximada porque las fotos de la galería no traen la profundidad del LiDAR.
+
+## IA en el escaneo 3D
+
+- **Paredes, piso y techo planos:** ARKit clasifica cada cara de la malla con su modelo en el iPhone (pared, piso, techo, mesa, asiento, ventana, puerta). Cada región plana grande de pared, piso o techo se ajusta a un plano (vertical u horizontal) y sus vértices cercanos (hasta 8 cm) se proyectan sobre él; en las uniones los vértices quedan sobre ambos planos, así esquinas y bordes salen rectos.
+- **Sin personas:** la segmentación de personas de Apple (Vision) marca a la gente en cada foto y esas zonas nunca se usan para la textura, los colores ni la igualación de exposición.

@@ -5,6 +5,7 @@ import CoreImage
 import ModelIO
 import SceneKit
 import UIKit
+import Vision
 
 /// Free-form LiDAR scan: ARKit rebuilds the surfaces around you as a triangle
 /// mesh while sharp photos are taken along the way. On saving, the photos are
@@ -77,7 +78,11 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     private func configuracion() -> ARWorldTrackingConfiguration {
         let configuracion = ARWorldTrackingConfiguration()
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+        // With classification ARKit's on-device model labels each face as wall,
+        // floor, ceiling, table, seat, window or door (used to straighten surfaces).
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            configuracion.sceneReconstruction = .meshWithClassification
+        } else if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             configuracion.sceneReconstruction = .mesh
         }
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
@@ -173,7 +178,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     /// Saves the scan into `carpeta`, returning the vertex and triangle count.
     static func guardar(_ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
         // One welded, cleaned mesh instead of ARKit's loose pieces.
-        var malla = LimpiezaMalla.limpiar(Texturizar.unir(piezas))
+        // Clean, then straighten walls, floor and ceiling (ARKit's classification).
+        var malla = Planos.regularizar(LimpiezaMalla.limpiar(Texturizar.unir(piezas)))
         var fotogramas = fotogramas
         if !fotogramas.isEmpty {
             Exposicion.igualar(&fotogramas, malla: malla)
@@ -407,6 +413,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         )
         fotograma.archivo = guardada ? archivo : nil
         fotograma.nitidez = Fotograma.nitidez(rgba: rgba, ancho: ancho, alto: alto)
+        fotograma.personas = mascaraPersonas(original, camara: camara, ancho: ancho, alto: alto, contexto: contexto)
 
         if let profundidad, CVPixelBufferGetPixelFormatType(profundidad) == kCVPixelFormatType_DepthFloat32 {
             CVPixelBufferLockBaseAddress(profundidad, .readOnly)
@@ -426,6 +433,53 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             }
         }
         return fotograma
+    }
+
+    /// Where the people are in the photo (1 = person), at `ancho` × `alto`, using
+    /// Apple's person segmentation. The camera image is landscape whatever way the
+    /// iPhone is held, so it is turned upright first (people are found much more
+    /// reliably standing up) and the mask is turned back afterwards.
+    private static func mascaraPersonas(_ imagen: CIImage, camara: ARCamera, ancho: Int, alto: Int, contexto: CIContext) -> [UInt8] {
+        // World "up" seen from the camera: image X is camera +X, image rows grow along camera -Y.
+        let arriba = camara.transform.inverse * SIMD4<Float>(0, 1, 0, 0)
+        let orientacion: CGImagePropertyOrientation
+        if abs(arriba.x) > abs(arriba.y) {
+            orientacion = arriba.x < 0 ? .right : .left
+        } else {
+            orientacion = arriba.y > 0 ? .up : .down
+        }
+        let inversa: CGImagePropertyOrientation = orientacion == .right ? .left : orientacion == .left ? .right : orientacion
+
+        let derecha = imagen.oriented(orientacion)
+        let escala = 512 / max(derecha.extent.width, derecha.extent.height)
+        let pequena = derecha.transformed(by: CGAffineTransform(scaleX: escala, y: escala))
+        guard let cg = contexto.createCGImage(pequena, from: pequena.extent) else { return [] }
+
+        let solicitud = VNGeneratePersonSegmentationRequest()
+        solicitud.qualityLevel = .balanced
+        solicitud.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        do {
+            try VNImageRequestHandler(cgImage: cg, options: [:]).perform([solicitud])
+        } catch {
+            return []
+        }
+        guard let mascara = solicitud.results?.first?.pixelBuffer else { return [] }
+
+        // Back to the camera's orientation and the photo's small size.
+        var vuelta = CIImage(cvPixelBuffer: mascara).oriented(inversa)
+        vuelta = vuelta.transformed(by: CGAffineTransform(translationX: -vuelta.extent.minX, y: -vuelta.extent.minY))
+        vuelta = vuelta.transformed(by: CGAffineTransform(scaleX: CGFloat(ancho) / vuelta.extent.width, y: CGFloat(alto) / vuelta.extent.height))
+        guard let cgMascara = contexto.createCGImage(vuelta, from: CGRect(x: 0, y: 0, width: ancho, height: alto)) else { return [] }
+        var gris = [UInt8](repeating: 0, count: ancho * alto)
+        let dibujado = gris.withUnsafeMutableBytes { buffer -> Bool in
+            guard let c = CGContext(data: buffer.baseAddress, width: ancho, height: alto, bitsPerComponent: 8, bytesPerRow: ancho,
+                                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            c.draw(cgMascara, in: CGRect(x: 0, y: 0, width: ancho, height: alto))
+            return true
+        }
+        guard dibujado else { return [] }
+        let personas = gris.map { $0 > 127 ? UInt8(1) : 0 }
+        return personas.contains(1) ? personas : []
     }
 
     private static func mensaje(_ estado: ARCamera.TrackingState) -> String {
@@ -516,6 +570,17 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             let p = base.advanced(by: i * f.bytesPerIndex)
             indices.append(f.bytesPerIndex == 2 ? UInt32(p.assumingMemoryBound(to: UInt16.self).pointee) : p.assumingMemoryBound(to: UInt32.self).pointee)
         }
-        return PiezaMalla(vertices: vertices, normales: normales, indices: indices)
+        // Per-vertex class: the most common class among the faces around it.
+        var clases: [UInt8] = []
+        if let clasificacion = g.classification, clasificacion.count == f.count {
+            var votos = [[UInt16]](repeating: [UInt16](repeating: 0, count: 8), count: g.vertices.count)
+            for cara in 0..<f.count {
+                let valor = clasificacion.buffer.contents().advanced(by: clasificacion.offset + clasificacion.stride * cara).assumingMemoryBound(to: UInt8.self).pointee
+                let c = Int(min(valor, 7))
+                for k in 0..<3 { votos[Int(indices[cara * 3 + k])][c] &+= 1 }
+            }
+            clases = votos.map { v in UInt8(v.indices.max { v[$0] < v[$1] } ?? 0) }
+        }
+        return PiezaMalla(vertices: vertices, normales: normales, indices: indices, clases: clases)
     }
 }
