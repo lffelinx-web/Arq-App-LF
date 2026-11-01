@@ -213,7 +213,7 @@ enum Atlas {
         }
         if ubicaciones.isEmpty {
             // Too many untextured triangles to pack: they share one cell.
-            ubicaciones = Array(repeating: (0, 0, 0), count: tamanosPaquete.count)
+            ubicaciones = Array(repeating: (atlas: 0, x: 0, y: 0), count: tamanosPaquete.count)
         }
 
         let desplazamientos = nivelarCosturas(malla, etiquetas: etiquetas, uvFoto: uvFoto, fotogramas: fotogramas)
