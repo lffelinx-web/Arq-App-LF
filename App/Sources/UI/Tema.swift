@@ -21,6 +21,7 @@ enum Tema {
         case .cuarto: return acento
         case .malla: return azul
         case .medidas: return verde
+        case .objeto: return Color(hex: 0xB38CF0)
         }
     }
 }

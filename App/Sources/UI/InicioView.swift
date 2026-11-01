@@ -42,11 +42,18 @@ struct InicioView: View {
             .navigationDestination(for: Proyecto.self) { DetalleView(proyecto: $0) }
         }
         .fullScreenCover(item: $captura) { tipo in
-            ConPermisoCamara {
-                switch tipo {
-                case .cuarto: PantallaCuarto(alGuardar: abrir)
-                case .malla: PantallaMalla(alGuardar: abrir)
-                case .medidas: PantallaMedicion(alGuardar: abrir)
+            Group {
+                if tipo == .objeto {
+                    // Uses photos from the library, no camera needed.
+                    PantallaFotogrametria(alGuardar: abrir)
+                } else {
+                    ConPermisoCamara {
+                        switch tipo {
+                        case .cuarto: PantallaCuarto(alGuardar: abrir)
+                        case .malla: PantallaMalla(alGuardar: abrir)
+                        case .medidas, .objeto: PantallaMedicion(alGuardar: abrir)
+                        }
+                    }
                 }
             }
             .environment(almacen)
@@ -75,6 +82,13 @@ struct InicioView: View {
                     abrirCaptura(.medidas)
                 }
             }
+            BotonModo(
+                titulo: "Fotos a 3D",
+                detalle: "Elige fotos de un objeto o rincón y el iPhone arma un modelo fotorrealista.",
+                icono: "photo.stack",
+                color: Tema.color(.objeto),
+                compacto: true
+            ) { abrirCaptura(.objeto) }
         }
     }
 

@@ -50,3 +50,9 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 - **3.3:** cada triángulo exige que sus 3 esquinas sean visibles en la foto y evita las fotos donde cae sobre un borde de profundidad (sin "embarrar" el fondo en las orillas), triángulos orientados según sus normales y dibujados por una sola cara (las láminas delgadas ya no muestran la textura en espejo por detrás), contorno de la malla sin dientes y suavizado, y guía de cobertura en vivo (verde = con foto, naranja = falta foto).
 - **3.4:** se quitan las láminas sueltas y delgadas que deja ARKit (las "tiras de papel" flotantes) con una apertura morfológica sobre los triángulos, y el visor usa un fondo gris neutro para que las zonas sin escanear no se vean como agujeros negros.
 - **3.5:** consistencia entre fotos (si 3 o más fotos ven una zona, se descartan las que ven un color muy distinto a la mediana: patas delgadas, personas que pasan), densidad de textura uniforme (todas las zonas reciben los mismos píxeles por metro, hasta 4 atlas de 4096 px) y filtro de láminas sueltas a 3 anillos.
+
+## Fase 4: Fotos a 3D
+
+- Se eligen de 10 a 300 fotos de la galería (mejor entre 20 y 200) y el iPhone arma un modelo USDZ texturizado con Object Capture de Apple (`PhotogrammetrySession`), sin Mac ni internet.
+- Opción para recortar solo el objeto (quita el fondo) o conservar todo (rincones, fachadas).
+- La escala es aproximada porque las fotos de la galería no traen la profundidad del LiDAR.

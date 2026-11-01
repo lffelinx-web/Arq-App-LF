@@ -7,12 +7,15 @@ enum TipoProyecto: String, Codable, CaseIterable {
     case malla
     /// Point-to-point measurements.
     case medidas
+    /// Photogrammetry model made from library photos ("Fotos a 3D").
+    case objeto
 
     var nombre: String {
         switch self {
         case .cuarto: return "Cuarto"
         case .malla: return "Malla 3D"
         case .medidas: return "Medidas"
+        case .objeto: return "Objeto 3D"
         }
     }
 
@@ -21,6 +24,7 @@ enum TipoProyecto: String, Codable, CaseIterable {
         case .cuarto: return "square.split.bottomrightquarter"
         case .malla: return "cube.transparent"
         case .medidas: return "ruler"
+        case .objeto: return "photo.stack"
         }
     }
 }

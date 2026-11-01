@@ -34,6 +34,7 @@ struct DetalleView: View {
         case .cuarto: return [.modelo, .plano, .datos]
         case .malla: return almacen.existe(.foto, de: proyecto) ? [.modelo, .foto, .datos] : [.modelo, .datos]
         case .medidas: return [.foto, .datos]
+        case .objeto: return almacen.existe(.foto, de: proyecto) ? [.modelo, .foto, .datos] : [.modelo, .datos]
         }
     }
 
@@ -216,6 +217,14 @@ private struct HojaDatos: View {
             VStack(spacing: 14) {
                 if let plano, !plano.vacio { datosPlano(plano) }
                 if proyecto.tipo == .malla { datosMalla }
+                if proyecto.tipo == .objeto, let fotos = proyecto.fotos {
+                    Tarjeta {
+                        VStack(spacing: 10) {
+                            FilaDato(titulo: "Fotos usadas", valor: "\(fotos)", icono: "photo.stack")
+                            FilaDato(titulo: "Escala", valor: "Aproximada", icono: "ruler")
+                        }
+                    }
+                }
                 if proyecto.tipo == .medidas { datosMedidas }
                 Tarjeta {
                     VStack(alignment: .leading, spacing: 8) {
