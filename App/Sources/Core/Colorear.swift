@@ -50,6 +50,43 @@ struct Fotograma {
         return abs(medida - distancia) < 0.05 + 0.03 * distancia
     }
 
+    /// Depth jump around a pixel (largest minus smallest LiDAR depth in a 3 × 3
+    /// window). Large on object outlines, where the photo mixes object and background.
+    func saltoProfundidad(u: Float, v: Float) -> Float {
+        guard anchoProfundidad > 0, altoProfundidad > 0, profundidad.count == anchoProfundidad * altoProfundidad else { return 0 }
+        let cx = min(anchoProfundidad - 1, max(0, Int(u * Float(anchoProfundidad) / Float(ancho))))
+        let cy = min(altoProfundidad - 1, max(0, Int(v * Float(altoProfundidad) / Float(alto))))
+        var menor = Float.greatestFiniteMagnitude, mayor: Float = 0
+        for y in max(0, cy - 1)...min(altoProfundidad - 1, cy + 1) {
+            for x in max(0, cx - 1)...min(anchoProfundidad - 1, cx + 1) {
+                let d = profundidad[y * anchoProfundidad + x]
+                guard d.isFinite, d > 0 else { continue }
+                menor = min(menor, d)
+                mayor = max(mayor, d)
+            }
+        }
+        return mayor > menor ? mayor - menor : 0
+    }
+
+    /// World points the LiDAR measured in this photo, on a grid every `paso`
+    /// depth pixels and up to `maximo` metres away. Used for the live coverage guide.
+    func puntosVistos(paso: Int = 8, maximo: Float = 3.5) -> [SIMD3<Float>] {
+        guard anchoProfundidad > 0, altoProfundidad > 0, profundidad.count == anchoProfundidad * altoProfundidad else { return [] }
+        var puntos: [SIMD3<Float>] = []
+        for y in stride(from: paso / 2, to: altoProfundidad, by: max(1, paso)) {
+            for x in stride(from: paso / 2, to: anchoProfundidad, by: max(1, paso)) {
+                let d = profundidad[y * anchoProfundidad + x]
+                guard d.isFinite, d > 0.1, d < maximo else { continue }
+                let u = (Float(x) + 0.5) / Float(anchoProfundidad) * Float(ancho)
+                let v = (Float(y) + 0.5) / Float(altoProfundidad) * Float(alto)
+                let local = SIMD4<Float>((u - cx) / fx * d, -(v - cy) / fy * d, -d, 1)
+                let w = camaraAMundo * local
+                puntos.append(SIMD3(w.x, w.y, w.z))
+            }
+        }
+        return puntos
+    }
+
     /// Colour with the exposure gain applied.
     func color(u: Float, v: Float) -> SIMD3<Float> {
         colorCrudo(u: u, v: v) * ganancia

@@ -269,7 +269,15 @@ enum Atlas {
             let a = punto(malla.vertices[indices[0]]), b = punto(malla.vertices[indices[1]]), c = punto(malla.vertices[indices[2]])
             let cara = simd_cross(b - a, c - a)
             let normalCara = simd_length(cara) > 1e-9 ? simd_normalize(cara) : SIMD3<Float>(0, 1, 0)
-            for (k, i) in indices.enumerated() {
+            // Wind every triangle so its front faces where its normals point
+            // (the side the camera saw), which allows one-sided drawing.
+            var orden = [0, 1, 2]
+            if conNormales {
+                let suma = punto(malla.normales[indices[0]]) + punto(malla.normales[indices[1]]) + punto(malla.normales[indices[2]])
+                if simd_dot(suma, cara) < 0 { orden = [0, 2, 1] }
+            }
+            for k in orden {
+                let i = indices[k]
                 let v = malla.vertices[i]
                 malla3.posiciones += [v.0, v.1, v.2]
                 let n = conNormales ? punto(malla.normales[i]) : normalCara
@@ -279,6 +287,7 @@ enum Atlas {
             tareasOrdenadas.append(tarea)
         }
         let numero = (tareas.map { Int($0.atlas) }.max() ?? -1) + 1
+        malla3.orientada = conNormales
         return Plan(lado: lado, numeroAtlas: numero, malla: malla3, tareas: tareasOrdenadas, ganancias: fotogramas.map(\.ganancia))
     }
 

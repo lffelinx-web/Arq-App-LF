@@ -55,7 +55,7 @@ enum EscenaMalla {
             elementos.append(SCNGeometryElement(data: datos, primitiveType: .triangles, primitiveCount: Int(grupo.triangulos), bytesPerIndex: 4))
 
             let material = SCNMaterial()
-            material.isDoubleSided = true
+            material.isDoubleSided = !malla.orientada
             if grupo.foto >= 0, let imagen = textura(grupo.foto) {
                 material.diffuse.contents = imagen
                 material.diffuse.wrapS = .clamp

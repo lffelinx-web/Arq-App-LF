@@ -7,7 +7,66 @@ enum LimpiezaMalla {
     static func limpiar(_ malla: PiezaMalla) -> PiezaMalla {
         let soldada = soldar(malla)
         let sinFragmentos = quitarFragmentos(soldada, minimo: max(40, soldada.triangulos / 400))
-        return compactar(rellenarHuecos(sinFragmentos))
+        return compactar(suavizarBordes(rellenarHuecos(sinFragmentos)))
+    }
+
+    /// Tidies the torn-paper outline where the scan ends: drops the "teeth"
+    /// (triangles with two or more open edges) and then relaxes each border
+    /// vertex toward its two neighbours along the border.
+    static func suavizarBordes(_ m: PiezaMalla, pasadas: Int = 2, iteraciones: Int = 3, factor: Float = 0.5) -> PiezaMalla {
+        func clave(_ a: UInt32, _ b: UInt32) -> UInt64 { UInt64(min(a, b)) << 32 | UInt64(max(a, b)) }
+        func conteo(_ m: PiezaMalla) -> [UInt64: Int] {
+            var c: [UInt64: Int] = [:]
+            c.reserveCapacity(m.indices.count)
+            for t in 0..<m.triangulos {
+                let v = [m.indices[t * 3], m.indices[t * 3 + 1], m.indices[t * 3 + 2]]
+                for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] { c[clave(a, b), default: 0] += 1 }
+            }
+            return c
+        }
+
+        var r = m
+        // Tiny meshes would lose too much.
+        if r.triangulos >= 50 {
+            for _ in 0..<pasadas {
+                let c = conteo(r)
+                var indices: [UInt32] = []
+                indices.reserveCapacity(r.indices.count)
+                var quitados = 0
+                for t in 0..<r.triangulos {
+                    let v = [r.indices[t * 3], r.indices[t * 3 + 1], r.indices[t * 3 + 2]]
+                    let abiertas = [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])].filter { c[clave($0.0, $0.1)] == 1 }.count
+                    if abiertas >= 2 {
+                        quitados += 1
+                    } else {
+                        indices += v
+                    }
+                }
+                r.indices = indices
+                if quitados == 0 { break }
+            }
+        }
+
+        var vecinosBorde: [UInt32: [UInt32]] = [:]
+        for (k, n) in conteo(r) where n == 1 {
+            let a = UInt32(k >> 32), b = UInt32(k & 0xffff_ffff)
+            vecinosBorde[a, default: []].append(b)
+            vecinosBorde[b, default: []].append(a)
+        }
+        func punto(_ i: UInt32) -> SIMD3<Float> {
+            let v = r.vertices[Int(i)]
+            return SIMD3(v.0, v.1, v.2)
+        }
+        for _ in 0..<iteraciones {
+            var nuevas: [(UInt32, SIMD3<Float>)] = []
+            for (v, vecinos) in vecinosBorde where vecinos.count == 2 {
+                let p = punto(v)
+                let medio = (punto(vecinos[0]) + punto(vecinos[1])) / 2
+                nuevas.append((v, p + (medio - p) * factor))
+            }
+            for (v, p) in nuevas { r.vertices[Int(v)] = (p.x, p.y, p.z) }
+        }
+        return r
     }
 
     /// Merges vertices closer than `tolerancia` (metres). ARKit hands the mesh

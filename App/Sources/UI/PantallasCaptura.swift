@@ -148,6 +148,13 @@ struct PantallaMalla: View {
                 }
                 Pastilla(texto: escaner.escaneando ? escaner.aviso : "Escaneo en pausa")
                 Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos · \(escaner.fotos) fotos para textura")
+                HStack(spacing: 12) {
+                    Label("Con foto", systemImage: "circle.fill").foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
+                    Label("Falta foto: detente y apunta", systemImage: "circle.fill").foregroundStyle(Tema.acento)
+                }
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
                 Spacer()
                 HStack(spacing: 18) {
                     BotonCaptura(icono: "arrow.counterclockwise", titulo: "Reiniciar") { escaner.iniciar() }

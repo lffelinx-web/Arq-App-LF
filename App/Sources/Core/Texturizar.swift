@@ -16,6 +16,9 @@ struct MallaTexturizada: Equatable {
     var normales: [Float] = []     // nx, ny, nz per corner
     var uvs: [Float] = []          // u, v per corner, (0, 0) at the photo's top-left
     var grupos: [Grupo] = []
+    /// Every triangle's winding agrees with its normal, so it can be drawn one-sided
+    /// (seen from behind, thin surfaces disappear instead of showing a mirrored texture).
+    var orientada = false
 
     var esquinas: Int { posiciones.count / 3 }
     var numeroTriangulos: Int { esquinas / 3 }
@@ -45,7 +48,7 @@ enum Texturizar {
     /// triangle's UVs on that photo, or nil if the photo can't texture it.
     static func puntaje(
         _ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>, normal: SIMD3<Float>,
-        foto f: Fotograma, inversa: simd_float4x4, posicion: SIMD3<Float>, frontalMinimo: Float = 0.2
+        foto f: Fotograma, inversa: simd_float4x4, posicion: SIMD3<Float>, frontalMinimo: Float = 0.2, estricto: Bool = true
     ) -> (puntaje: Float, uv: [Float])? {
         guard let pa = f.proyectar(a, con: inversa),
               let pb = f.proyectar(b, con: inversa),
@@ -56,10 +59,19 @@ enum Texturizar {
         let frontal = simd_dot(normal, hacia)
         guard frontal > frontalMinimo else { return nil }
         guard f.visible(u: pm.u, v: pm.v, distancia: pm.distancia) else { return nil }
+        var penalizacion: Float = 1
+        if estricto {
+            // Every corner must be in plain sight, or the photo paints part of
+            // whatever was in front of it onto the triangle.
+            for p in [pa, pb, pc] where !f.visible(u: p.u, v: p.v, distancia: p.distancia) { return nil }
+            // On object outlines the photo mixes object and background: prefer another photo.
+            let salto = [pa, pb, pc, pm].map { f.saltoProfundidad(u: $0.u, v: $0.v) }.max() ?? 0
+            if salto > 0.12 + 0.04 * pm.distancia { penalizacion = 0.25 }
+        }
         let bordeX = min(pm.u, Float(f.ancho) - pm.u) / Float(f.ancho)
         let bordeY = min(pm.v, Float(f.alto) - pm.v) / Float(f.alto)
         let enCentro = min(1, 4 * min(bordeX, bordeY) + 0.2)
-        let puntaje = frontal * frontal * enCentro / max(pm.distancia, 0.3)
+        let puntaje = frontal * frontal * enCentro * penalizacion / max(pm.distancia, 0.3)
         let w = Float(f.ancho), h = Float(f.alto)
         return (puntaje, [pa.u / w, pa.v / h, pb.u / w, pb.v / h, pc.u / w, pc.v / h])
     }
@@ -89,7 +101,7 @@ enum Texturizar {
             if lista.isEmpty {
                 // Edges and corners seen only at a grazing angle: a slanted photo beats none.
                 for f in fotogramas.indices {
-                    guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f], frontalMinimo: 0.03) else { continue }
+                    guard let r = puntaje(a, b, c, normal: n, foto: fotogramas[f], inversa: inversas[f], posicion: posiciones[f], frontalMinimo: 0.03, estricto: false) else { continue }
                     lista.append((Int32(f), r.puntaje * factorNitidez[f] * 0.5))
                 }
             }
@@ -185,7 +197,7 @@ enum Texturizar {
     /// Compact binary used by the app's viewer.
     static func datos(_ m: MallaTexturizada) -> Data {
         var d = Data("ALFT".utf8)
-        agregar(&d, UInt32(1))
+        agregar(&d, UInt32(m.orientada ? 2 : 1))
         agregar(&d, UInt32(m.esquinas))
         agregar(&d, UInt32(m.grupos.count))
         for v in m.posiciones { agregar(&d, v.bitPattern) }
@@ -207,11 +219,13 @@ enum Texturizar {
             func u32(_ i: Int) -> UInt32 {
                 UInt32(crudo[i]) | UInt32(crudo[i + 1]) << 8 | UInt32(crudo[i + 2]) << 16 | UInt32(crudo[i + 3]) << 24
             }
-            guard u32(4) == 1 else { throw ErrorTextura.formato }
+            let version = u32(4)
+            guard version == 1 || version == 2 else { throw ErrorTextura.formato }
             let esquinas = Int(u32(8)), grupos = Int(u32(12))
             let necesario = 16 + esquinas * 8 * 4 + grupos * 12
             guard crudo.count >= necesario else { throw ErrorTextura.formato }
             var m = MallaTexturizada()
+            m.orientada = version == 2
             var cursor = 16
             func flotantes(_ n: Int) -> [Float] {
                 var r = [Float]()

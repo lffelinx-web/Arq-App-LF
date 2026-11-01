@@ -40,15 +40,27 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     private var ultimaFotoFecha = Date.distantPast
     private let contextoCI = CIContext(options: [.cacheIntermediates: false])
 
+    /// Live mesh: translucent, tinted per vertex by the coverage guide
+    /// (green = some photo already covers it, amber = still needs a photo).
     private let material: SCNMaterial = {
         let m = SCNMaterial()
-        m.diffuse.contents = UIColor(red: 0.96, green: 0.65, blue: 0.24, alpha: 1)
+        m.diffuse.contents = UIColor.white
         m.lightingModel = .constant
-        m.fillMode = .lines
+        m.transparency = 0.55
         m.isDoubleSided = true
+        m.writesToDepthBuffer = false
         return m
     }()
     private var ultimoConteo = Date.distantPast
+
+    /// Coverage guide: 10 cm cells the photos have already seen.
+    static let tamanoCelda: Float = 0.1
+    private let candadoCobertura = NSLock()
+    private var celdasCubiertas = Set<SIMD3<Int32>>()
+    /// Mesh nodes, touched only on SceneKit's render thread.
+    private var nodos: [UUID: (nodo: SCNNode, ancla: ARMeshAnchor)] = [:]
+    private var recolorear = false
+    private var ultimoRecoloreo = Date.distantPast
 
     override init() {
         super.init()
@@ -108,6 +120,9 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     func iniciar() {
         candado.lock()
         fotogramas.removeAll()
+        candadoCobertura.lock()
+        celdasCubiertas.removeAll()
+        candadoCobertura.unlock()
         candado.unlock()
         try? FileManager.default.removeItem(at: carpetaFotos)
         try? FileManager.default.createDirectory(at: carpetaFotos, withIntermediateDirectories: true)
@@ -221,12 +236,41 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     func renderer(_ renderer: SCNSceneRenderer, nodeFor anchor: ARAnchor) -> SCNNode? {
         guard let malla = anchor as? ARMeshAnchor else { return nil }
-        return SCNNode(geometry: geometria(malla.geometry))
+        let nodo = SCNNode(geometry: geometria(malla))
+        nodos[malla.identifier] = (nodo, malla)
+        return nodo
     }
 
     func renderer(_ renderer: SCNSceneRenderer, didUpdate node: SCNNode, for anchor: ARAnchor) {
         guard let malla = anchor as? ARMeshAnchor else { return }
-        node.geometry = geometria(malla.geometry)
+        node.geometry = geometria(malla)
+        nodos[malla.identifier] = (node, malla)
+    }
+
+    func renderer(_ renderer: SCNSceneRenderer, didRemove node: SCNNode, for anchor: ARAnchor) {
+        nodos[anchor.identifier] = nil
+    }
+
+    /// After a new photo, repaints the coverage of the pieces that didn't change.
+    func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+        guard recolorear, Date().timeIntervalSince(ultimoRecoloreo) > 1 else { return }
+        recolorear = false
+        ultimoRecoloreo = Date()
+        for (_, par) in nodos { par.nodo.geometry = geometria(par.ancla) }
+    }
+
+    // MARK: - Coverage guide
+
+    private func marcarCubierto(_ fotograma: Fotograma) {
+        let celdas = fotograma.puntosVistos().map(Self.celda)
+        candadoCobertura.lock()
+        celdasCubiertas.formUnion(celdas)
+        candadoCobertura.unlock()
+        recolorear = true
+    }
+
+    static func celda(_ p: SIMD3<Float>) -> SIMD3<Int32> {
+        SIMD3(Int32((p.x / tamanoCelda).rounded(.down)), Int32((p.y / tamanoCelda).rounded(.down)), Int32((p.z / tamanoCelda).rounded(.down)))
     }
 
     // MARK: - ARSessionDelegate
@@ -310,7 +354,10 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             guard let self else { return }
             let fotograma = Self.fotograma(imagen: imagen, profundidad: profundidad, camara: camara, contexto: self.contextoCI, archivo: archivo)
             self.candado.lock()
-            if let fotograma { self.fotogramas.append(fotograma) }
+            if let fotograma {
+                self.fotogramas.append(fotograma)
+                self.marcarCubierto(fotograma)
+            }
             let total = self.fotogramas.count
             self.candado.unlock()
             DispatchQueue.main.async {
@@ -395,7 +442,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
 
     // MARK: - Geometry
 
-    private func geometria(_ g: ARMeshGeometry) -> SCNGeometry {
+    private func geometria(_ ancla: ARMeshAnchor) -> SCNGeometry {
+        let g = ancla.geometry
         let v = g.vertices
         let vertices = SCNGeometrySource(buffer: v.buffer, vertexFormat: v.format, semantic: .vertex, vertexCount: v.count, dataOffset: v.offset, dataStride: v.stride)
         let n = g.normals
@@ -403,9 +451,34 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         let f = g.faces
         let datos = Data(bytes: f.buffer.contents(), count: f.count * f.indexCountPerPrimitive * f.bytesPerIndex)
         let elemento = SCNGeometryElement(data: datos, primitiveType: .triangles, primitiveCount: f.count, bytesPerIndex: f.bytesPerIndex)
-        let geometria = SCNGeometry(sources: [vertices, normales], elements: [elemento])
+        let geometria = SCNGeometry(sources: [vertices, normales, colores(ancla)], elements: [elemento])
         geometria.materials = [material]
         return geometria
+    }
+
+    /// Green where a photo already covers the mesh, amber where one is missing.
+    private func colores(_ ancla: ARMeshAnchor) -> SCNGeometrySource {
+        let g = ancla.geometry
+        let t = ancla.transform
+        candadoCobertura.lock()
+        let cubiertas = celdasCubiertas
+        candadoCobertura.unlock()
+        var valores = [Float]()
+        valores.reserveCapacity(g.vertices.count * 3)
+        for i in 0..<g.vertices.count {
+            let p = g.vertices.buffer.contents().advanced(by: g.vertices.offset + g.vertices.stride * i).assumingMemoryBound(to: Float.self)
+            let mundo = (t * SIMD4<Float>(p[0], p[1], p[2], 1)).xyz
+            if cubiertas.contains(Self.celda(mundo)) {
+                valores += [0.30, 0.85, 0.55]
+            } else {
+                valores += [0.96, 0.65, 0.24]
+            }
+        }
+        let datos = valores.withUnsafeBufferPointer { Data(buffer: $0) }
+        return SCNGeometrySource(
+            data: datos, semantic: .color, vectorCount: g.vertices.count, usesFloatComponents: true,
+            componentsPerVector: 3, bytesPerComponent: MemoryLayout<Float>.size, dataOffset: 0, dataStride: MemoryLayout<Float>.size * 3
+        )
     }
 
     static func pieza(_ ancla: ARMeshAnchor) -> PiezaMalla {
