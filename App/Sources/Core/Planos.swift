@@ -44,7 +44,40 @@ enum Planos {
                 }
             }
         }
-        return recalcularNormales(r, referencia: m)
+        return recalcularNormales(revertirVolteados(original: m, nueva: r), referencia: m)
+    }
+
+    /// Snapping can fold a thin triangle over (or squash it to nothing), which
+    /// shows as a see-through crack. Those triangles get their corners back
+    /// where they were; a few passes catch neighbours that fold in turn.
+    static func revertirVolteados(original m: PiezaMalla, nueva: PiezaMalla, pasadas: Int = 3) -> PiezaMalla {
+        var r = nueva
+        func normal(_ malla: PiezaMalla, _ t: Int) -> SIMD3<Float> {
+            let p = (0..<3).map { k -> SIMD3<Float> in
+                let v = malla.vertices[Int(malla.indices[t * 3 + k])]
+                return SIMD3(v.0, v.1, v.2)
+            }
+            return simd_cross(p[1] - p[0], p[2] - p[0])
+        }
+        for _ in 0..<pasadas {
+            var cambios = 0
+            for t in 0..<m.triangulos {
+                let antes = normal(m, t), ahora = normal(r, t)
+                let largoAntes = simd_length(antes), largoAhora = simd_length(ahora)
+                guard largoAntes > 1e-10 else { continue }
+                let volteado = largoAhora < largoAntes * 0.05 || simd_dot(antes, ahora) / (largoAntes * max(largoAhora, 1e-12)) < 0.2
+                guard volteado else { continue }
+                for k in 0..<3 {
+                    let i = Int(m.indices[t * 3 + k])
+                    if r.vertices[i] != m.vertices[i] {
+                        r.vertices[i] = m.vertices[i]
+                        cambios += 1
+                    }
+                }
+            }
+            if cambios == 0 { break }
+        }
+        return r
     }
 
     /// Flat regions of wall, floor and ceiling and the plane of each.

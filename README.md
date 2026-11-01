@@ -61,3 +61,4 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 
 - **Paredes, piso y techo planos:** ARKit clasifica cada cara de la malla con su modelo en el iPhone (pared, piso, techo, mesa, asiento, ventana, puerta). Cada región plana grande de pared, piso o techo se ajusta a un plano (vertical u horizontal) y sus vértices cercanos (hasta 8 cm) se proyectan sobre él; en las uniones los vértices quedan sobre ambos planos, así esquinas y bordes salen rectos.
 - **Sin personas:** la segmentación de personas de Apple (Vision) marca a la gente en cada foto y esas zonas nunca se usan para la textura, los colores ni la igualación de exposición.
+- **Sin rendijas:** después de enderezar los planos, las orillas abiertas que quedan a menos de 2.5 cm de otra orilla (piezas de ARKit que no se tocaban) se cosen como un cierre y se rellenan los huecos chicos que quedan; los triángulos que el enderezado volteó o aplastó regresan a su posición original.

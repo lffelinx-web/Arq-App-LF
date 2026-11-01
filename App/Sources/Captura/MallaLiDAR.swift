@@ -178,8 +178,9 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     /// Saves the scan into `carpeta`, returning the vertex and triangle count.
     static func guardar(_ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
         // One welded, cleaned mesh instead of ARKit's loose pieces.
-        // Clean, then straighten walls, floor and ceiling (ARKit's classification).
-        var malla = Planos.regularizar(LimpiezaMalla.limpiar(Texturizar.unir(piezas)))
+        // Clean, straighten walls, floor and ceiling (ARKit's classification), then
+        // zip up the cracks between ARKit's pieces, now that both sides are coplanar.
+        var malla = LimpiezaMalla.cerrarRendijas(Planos.regularizar(LimpiezaMalla.limpiar(Texturizar.unir(piezas))))
         var fotogramas = fotogramas
         if !fotogramas.isEmpty {
             Exposicion.igualar(&fotogramas, malla: malla)

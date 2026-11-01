@@ -50,6 +50,93 @@ enum LimpiezaMalla {
         return resultado
     }
 
+    /// Closes the thin cracks between ARKit's mesh pieces: open-border vertices
+    /// that sit within `tolerancia` of an open-border vertex across the crack are
+    /// merged (like a zipper), then the small holes left are filled. Best run
+    /// after `Planos.regularizar`, when both sides of a crack lie on one plane.
+    static func cerrarRendijas(_ m: PiezaMalla, tolerancia: Float = 0.025) -> PiezaMalla {
+        compactar(rellenarHuecos(coserBordes(m, tolerancia: tolerancia)))
+    }
+
+    static func coserBordes(_ m: PiezaMalla, tolerancia: Float = 0.025) -> PiezaMalla {
+        func clave(_ a: UInt32, _ b: UInt32) -> UInt64 { UInt64(min(a, b)) << 32 | UInt64(max(a, b)) }
+        var aristas: [UInt64: Int] = [:]
+        aristas.reserveCapacity(m.indices.count)
+        for t in 0..<m.triangulos {
+            let v = [m.indices[t * 3], m.indices[t * 3 + 1], m.indices[t * 3 + 2]]
+            for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] { aristas[clave(a, b), default: 0] += 1 }
+        }
+        var borde = Set<UInt32>()
+        for (k, n) in aristas where n == 1 {
+            borde.insert(UInt32(k >> 32))
+            borde.insert(UInt32(k & 0xffff_ffff))
+        }
+        guard borde.count > 1 else { return m }
+
+        func punto(_ i: UInt32) -> SIMD3<Float> {
+            let v = m.vertices[Int(i)]
+            return SIMD3(v.0, v.1, v.2)
+        }
+        func celda(_ p: SIMD3<Float>) -> SIMD3<Int32> {
+            SIMD3(Int32((p.x / tolerancia).rounded(.down)), Int32((p.y / tolerancia).rounded(.down)), Int32((p.z / tolerancia).rounded(.down)))
+        }
+        var rejilla: [SIMD3<Int32>: [UInt32]] = [:]
+        for v in borde { rejilla[celda(punto(v)), default: []].append(v) }
+
+        var padre: [UInt32: UInt32] = [:]
+        func raiz(_ x: UInt32) -> UInt32 {
+            var x = x
+            while let p = padre[x], p != x { x = p }
+            return x
+        }
+        for v in borde.sorted() {
+            let p = punto(v), c = celda(p)
+            var mejor: UInt32?
+            var distanciaMejor = tolerancia
+            for dx in -1...1 {
+                for dy in -1...1 {
+                    for dz in -1...1 {
+                        for o in rejilla[c &+ SIMD3(Int32(dx), Int32(dy), Int32(dz))] ?? [] where o != v {
+                            // Vertices joined by an edge are neighbours on the same side, not across a crack.
+                            guard aristas[clave(v, o)] == nil else { continue }
+                            let d = simd_distance(p, punto(o))
+                            if d < distanciaMejor {
+                                distanciaMejor = d
+                                mejor = o
+                            }
+                        }
+                    }
+                }
+            }
+            if let mejor {
+                let a = raiz(v), b = raiz(mejor)
+                if a != b { padre[max(a, b)] = min(a, b) }
+            }
+        }
+        guard !padre.isEmpty else { return m }
+
+        // Each group of merged vertices meets at its average position.
+        var grupos: [UInt32: [UInt32]] = [:]
+        for v in borde { grupos[raiz(v), default: []].append(v) }
+        var r = m
+        for (representante, miembros) in grupos where miembros.count > 1 {
+            let centro = miembros.map(punto).reduce(.zero, +) / Float(miembros.count)
+            r.vertices[Int(representante)] = (centro.x, centro.y, centro.z)
+        }
+        var indices: [UInt32] = []
+        indices.reserveCapacity(m.indices.count)
+        var vistos = Set<SIMD3<UInt32>>()
+        for t in 0..<m.triangulos {
+            let a = raiz(m.indices[t * 3]), b = raiz(m.indices[t * 3 + 1]), c = raiz(m.indices[t * 3 + 2])
+            guard a != b, b != c, a != c else { continue }
+            let o = [a, b, c].sorted()
+            guard vistos.insert(SIMD3(o[0], o[1], o[2])).inserted else { continue }
+            indices += [a, b, c]
+        }
+        r.indices = indices
+        return r
+    }
+
     /// Tidies the torn-paper outline where the scan ends: drops the "teeth"
     /// (triangles with two or more open edges) and then relaxes each border
     /// vertex toward its two neighbours along the border.
