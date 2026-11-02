@@ -182,12 +182,18 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         // zip up the cracks between ARKit's pieces, now that both sides are coplanar.
         var malla = LimpiezaMalla.cerrarRendijas(Planos.regularizar(LimpiezaMalla.limpiar(Texturizar.unir(piezas))))
         var fotogramas = fotogramas
+        var etiquetas: [Int32] = []
         if !fotogramas.isEmpty {
             Exposicion.igualar(&fotogramas, malla: malla)
+            // Photo for each triangle; what no photo saw at the edge of the scan goes.
+            let conFoto = fotogramas.filter { $0.archivo != nil }
+            if !conFoto.isEmpty, malla.triangulos > 0 {
+                (malla, etiquetas) = LimpiezaMalla.recortarSinFoto(malla, etiquetas: Texturizar.etiquetas(malla, fotogramas: conFoto))
+            }
             let (colores, vistos) = Colorear.coloresYVistos(vertices: malla.vertices, normales: malla.normales, fotogramas: fotogramas)
             malla.colores = Colorear.rellenar(colores, vistos: vistos, malla: malla)
         }
-        let texturizada = try guardarTextura(malla, fotogramas: fotogramas, en: carpeta)
+        let texturizada = try guardarTextura(malla, etiquetas: etiquetas, fotogramas: fotogramas, en: carpeta)
         let ply = carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
         let totales = try PLY.escribir([malla], en: ply)
         let obj = carpeta.appendingPathComponent(ArchivoProyecto.mallaOBJ.rawValue)
@@ -217,11 +223,10 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     /// Projects the photos onto the mesh, packs the pieces it uses into up to
     /// three 4096 px texture images with blended seams, and writes `textura.bin`
     /// plus the `textura/` folder (OBJ, MTL and those images).
-    private static func guardarTextura(_ malla: PiezaMalla, fotogramas: [Fotograma], en carpeta: URL) throws -> MallaTexturizada? {
+    private static func guardarTextura(_ malla: PiezaMalla, etiquetas: [Int32], fotogramas: [Fotograma], en carpeta: URL) throws -> MallaTexturizada? {
         let conFoto = fotogramas.filter { $0.archivo != nil }
-        guard !conFoto.isEmpty, malla.triangulos > 0 else { return nil }
+        guard !conFoto.isEmpty, malla.triangulos > 0, etiquetas.count == malla.triangulos else { return nil }
         let tamanos = conFoto.map { f in f.archivo.flatMap(ImagenesIO.tamano) ?? SIMD2(f.ancho, f.alto) }
-        let etiquetas = Texturizar.etiquetas(malla, fotogramas: conFoto)
         guard etiquetas.contains(where: { $0 >= 0 }) else { return nil }
         let uvs = Texturizar.uvs(malla, etiquetas: etiquetas, fotogramas: conFoto)
         let plan = Atlas.planificar(malla, etiquetas: etiquetas, uvFoto: uvs, fotogramas: conFoto, tamanos: tamanos)
