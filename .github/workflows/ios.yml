@@ -1,7 +1,8 @@
 name: Compilar Arq LF
 on:
   push:
-    branches-ignore: [certificados]
+    branches-ignore: [certificados, fotogrametria-resultados]
+    paths-ignore: [herramientas/**, .github/workflows/fotogrametria.yml]
   workflow_dispatch:
 permissions:
   contents: read

@@ -1,0 +1,251 @@
+name: Prueba de fotogrametría
+# Prueba de factibilidad: procesa una carpeta de fotos en GitHub Actions de dos
+# formas y compara tiempo y resultado.
+#   - Linux: COLMAP (alineación) + OpenMVS (nube densa, malla y textura), solo CPU.
+#   - Mac: Object Capture de Apple, si la Mac virtual de GitHub lo admite.
+# Los modelos quedan como artefactos (se borran en 3 días) y las vistas previas
+# y los tiempos en la rama fotogrametria-resultados.
+on:
+  workflow_dispatch:
+    inputs:
+      enlace:
+        description: Enlace público a la carpeta de Google Drive con las fotos
+        required: true
+      lado:
+        description: Lado máximo de las fotos en píxeles (más chico = más rápido)
+        default: "3000"
+      detalle:
+        description: Detalle de Object Capture (reduced, medium, full)
+        default: medium
+permissions:
+  contents: write
+concurrency:
+  group: fotogrametria
+  cancel-in-progress: false
+jobs:
+  descargar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      fotos: ${{ steps.preparar.outputs.fotos }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Descargar fotos de Google Drive
+        env:
+          ENLACE: ${{ inputs.enlace }}
+        run: |
+          pip install --quiet gdown
+          python3 herramientas/descargar_drive.py "$ENLACE" crudas
+          ls -la crudas | head -20
+          du -sh crudas
+      - name: Convertir a JPG, enderezar y reducir
+        id: preparar
+        env:
+          LADO: ${{ inputs.lado }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq imagemagick libheif-examples > /dev/null
+          mkdir -p fotos
+          n=0
+          shopt -s nocaseglob nullglob
+          for f in crudas/*; do
+            base=$(basename "${f%.*}")
+            case "${f,,}" in
+              *.heic|*.heif) heif-convert -q 92 "$f" "/tmp/$base.jpg" > /dev/null && origen="/tmp/$base.jpg" ;;
+              *.jpg|*.jpeg|*.png) origen="$f" ;;
+              *) echo "Omito $f"; continue ;;
+            esac
+            convert "$origen" -auto-orient -resize "${LADO}x${LADO}>" -quality 92 "fotos/$(printf '%04d' $n)-$base.jpg"
+            n=$((n + 1))
+          done
+          echo "fotos=$n" >> "$GITHUB_OUTPUT"
+          echo "Fotos listas: $n"
+          identify -format '%wx%h\n' fotos/* | sort | uniq -c
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fotos
+          path: fotos
+          retention-days: 1
+
+  colmap-openmvs:
+    needs: descargar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fotos
+          path: fotos
+      - name: Instalar COLMAP y OpenMVS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq colmap > /dev/null
+          colmap -h | head -3 || true
+          docker pull -q openmvs/openmvs-ubuntu:latest
+          docker run --rm openmvs/openmvs-ubuntu:latest sh -c 'ls /usr/local/bin/OpenMVS 2>/dev/null || find / -name DensifyPointCloud -type f 2>/dev/null | head -3'
+          nproc; free -h; df -h .
+      - name: Procesar
+        run: |
+          set -euo pipefail
+          export QT_QPA_PLATFORM=offscreen
+          T0=$(date +%s)
+          marca() { echo "$1: $(( ($(date +%s) - T0) / 60 )) min" | tee -a tiempos.txt; }
+          mvs() {
+            docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w openmvs/openmvs-ubuntu:latest \
+              sh -c "export PATH=\$PATH:/usr/local/bin/OpenMVS:/openMVS_build/bin; $*"
+          }
+          N=$(ls fotos | wc -l)
+          echo "Fotos: $N" | tee tiempos.txt
+          colmap feature_extractor --database_path db.db --image_path fotos \
+            --ImageReader.camera_model OPENCV --SiftExtraction.use_gpu 0 --SiftExtraction.max_num_features 8192
+          marca "Puntos clave"
+          if [ "$N" -le 250 ]; then
+            colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 0
+          else
+            colmap sequential_matcher --database_path db.db --SiftMatching.use_gpu 0 --SequentialMatching.overlap 25
+          fi
+          marca "Emparejado"
+          mkdir -p sparse
+          colmap mapper --database_path db.db --image_path fotos --output_path sparse
+          marca "Alineación (SfM)"
+          # The model with most registered photos.
+          MEJOR=$(for m in sparse/*/; do echo "$(colmap model_analyzer --path "$m" 2>&1 | grep -i 'Registered images' | grep -o '[0-9]*$') $m"; done | sort -nr | head -1)
+          echo "Modelo elegido: $MEJOR" | tee -a tiempos.txt
+          MODELO=$(echo "$MEJOR" | awk '{print $2}')
+          colmap image_undistorter --image_path fotos --input_path "$MODELO" --output_path densa --output_type COLMAP --max_image_size 2400
+          marca "Corrección de lente"
+          mvs InterfaceCOLMAP -i densa -o escena.mvs --image-folder densa/images
+          mvs DensifyPointCloud escena.mvs --resolution-level 1 --max-threads 0
+          marca "Nube densa"
+          ls -la
+          mvs ReconstructMesh escena_dense.mvs -o escena_malla.mvs
+          marca "Malla"
+          ls -la
+          MALLA=$(ls -t escena_malla*.ply escena_dense_mesh*.ply 2>/dev/null | head -1 || true)
+          mvs TextureMesh escena_dense.mvs -m "$MALLA" -o modelo.mvs --export-type obj --decimate 0.5
+          marca "Textura"
+          mkdir -p modelo
+          mv modelo*.obj modelo*.mtl modelo*.png modelo*.jpg modelo/ 2>/dev/null || true
+          ls -la modelo
+          du -sh modelo
+      - name: Guardar tiempos
+        if: always()
+        run: |
+          mkdir -p resultados/colmap
+          cp tiempos.txt resultados/colmap/ 2>/dev/null || echo "Sin tiempos" > resultados/colmap/tiempos.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: modelo-colmap
+          path: |
+            modelo
+            resultados
+          retention-days: 3
+
+  object-capture:
+    needs: descargar
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fotos
+          path: fotos
+      - name: Compilar herramientas
+        run: |
+          sw_vers; sysctl -n machdep.cpu.brand_string; sysctl -n hw.memsize
+          system_profiler SPDisplaysDataType | head -20 || true
+          swiftc -O -parse-as-library herramientas/ObjectCapture.swift -o objectcapture
+          swiftc -O herramientas/Vistas.swift -o vistas
+      - name: Object Capture
+        id: oc
+        env:
+          DETALLE: ${{ inputs.detalle }}
+        run: |
+          mkdir -p resultados/objectcapture
+          T0=$(date +%s)
+          set +e
+          ./objectcapture fotos modelo.usdz "$DETALLE" 2>&1 | tee resultados/objectcapture/registro.txt
+          CODIGO=${PIPESTATUS[0]}
+          echo "Código: $CODIGO · $(( ($(date +%s) - T0) / 60 )) min" | tee resultados/objectcapture/tiempos.txt
+          ls -la modelo.usdz 2>/dev/null || true
+          exit 0
+      - name: Vistas de Object Capture
+        if: hashFiles('modelo.usdz') != ''
+        run: ./vistas modelo.usdz resultados/objectcapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: modelo-objectcapture
+          path: |
+            modelo.usdz
+            resultados
+          retention-days: 3
+
+  vistas-colmap:
+    needs: colmap-openmvs
+    if: always() && needs.colmap-openmvs.result == 'success'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: modelo-colmap
+          path: colmap
+      - name: Convertir a USDZ y hacer vistas
+        run: |
+          swiftc -O herramientas/Vistas.swift -o vistas
+          OBJ=$(ls colmap/modelo/*.obj | head -1)
+          mkdir -p resultados/colmap
+          ./vistas "$OBJ" resultados/colmap modelo-colmap.usdz
+          ls -la modelo-colmap.usdz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modelo-colmap-usdz
+          path: |
+            modelo-colmap.usdz
+            resultados
+          retention-days: 3
+
+  publicar:
+    needs: [descargar, colmap-openmvs, object-capture, vistas-colmap]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: modelo-*
+          path: artefactos
+      - name: Subir vistas y tiempos a la rama de resultados
+        env:
+          FOTOS: ${{ needs.descargar.outputs.fotos }}
+          RESULTADOS: "descargar=${{ needs.descargar.result }} colmap=${{ needs.colmap-openmvs.result }} objectcapture=${{ needs.object-capture.result }} vistas=${{ needs.vistas-colmap.result }}"
+        run: |
+          DESTINO=$(mktemp -d)
+          RUN="${GITHUB_RUN_ID}"
+          mkdir -p "$DESTINO/$RUN"
+          for d in artefactos/*/resultados; do cp -R "$d/." "$DESTINO/$RUN/"; done
+          {
+            echo "# Corrida $RUN"
+            echo
+            echo "- Fotos: $FOTOS"
+            echo "- Trabajos: $RESULTADOS"
+            for f in "$DESTINO/$RUN"/*/tiempos.txt; do echo; echo "## $(basename "$(dirname "$f")")"; echo '```'; cat "$f"; echo '```'; done
+          } > "$DESTINO/$RUN/README.md"
+          cat "$DESTINO/$RUN/README.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin fotogrametria-resultados 2>/dev/null; then
+            git checkout -B fotogrametria-resultados origin/fotogrametria-resultados
+          else
+            git checkout --orphan fotogrametria-resultados
+            git rm -rf --quiet .
+          fi
+          rm -rf artefactos
+          cp -R "$DESTINO/$RUN" .
+          git add "$RUN"
+          git commit -m "Resultados de fotogrametría $RUN"
+          git push origin fotogrametria-resultados
