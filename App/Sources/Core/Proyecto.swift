@@ -47,6 +47,11 @@ enum ArchivoProyecto: String, CaseIterable {
     case plano = "plano.json"
     case miniatura = "miniatura.jpg"
     case foto = "foto.jpg"
+    /// ARKit world map, so more sections can be scanned later in the same coordinates.
+    case mapa = "mapa.arworldmap"
+    /// All sections together, written when the project has more than one.
+    case completoUSDZ = "modelo-completo.usdz"
+    case completoPLY = "malla-completa.ply"
 }
 
 /// Metadata saved as `proyecto.json` in each project folder.
@@ -63,4 +68,6 @@ struct Proyecto: Codable, Hashable, Identifiable {
     /// Optional so projects saved by earlier versions still load.
     var fotos: Int?
     var cuartos: Int?
+    /// Sections of a large-space scan (nil or 1 for a single scan).
+    var secciones: Int?
 }

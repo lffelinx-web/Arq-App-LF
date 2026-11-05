@@ -18,8 +18,11 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     @Published private(set) var escaneando = false
     /// Photos kept to texture the mesh.
     @Published private(set) var fotos = 0
+    /// False while a new section is still finding its place in the earlier ones.
+    @Published private(set) var ubicado = true
 
-    static let maximoFotos = 80
+    /// Enough for a large section; each photo keeps about 0.6 MB in memory.
+    static let maximoFotos = 160
     /// Width of the texture photos and of the small copy used for vertex colours.
     static let anchoTextura: Float = 2560
     static let anchoColor: Float = 320
@@ -54,6 +57,12 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     }()
     private var ultimoConteo = Date.distantPast
 
+    /// World map of the earlier sections, when this scan continues a project.
+    private var mapaInicial: ARWorldMap?
+    private var vioReubicando = false
+    /// Earlier sections drawn faintly once the position is found.
+    private let nodoSecciones = SCNNode()
+
     /// Coverage guide: 10 cm cells the photos have already seen.
     static let tamanoCelda: Float = 0.1
     private let candadoCobertura = NSLock()
@@ -70,6 +79,8 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         vista.session.delegate = self
         vista.automaticallyUpdatesLighting = true
         vista.rendersContinuously = true
+        nodoSecciones.isHidden = true
+        vista.scene.rootNode.addChildNode(nodoSecciones)
     }
 
     deinit {
@@ -89,6 +100,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             configuracion.frameSemantics.insert(.sceneDepth)
         }
         configuracion.planeDetection = [.horizontal, .vertical]
+        configuracion.initialWorldMap = mapaInicial
         // A 4:3 format that can also take full-resolution stills for the textures.
         if let formato = ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing {
             configuracion.videoFormat = formato
@@ -121,7 +133,14 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         } catch {}
     }
 
-    /// Starts from scratch, dropping the mesh and photos.
+    /// Starts from scratch, dropping the mesh and photos. With `mapa` (the world
+    /// map of earlier sections) it first finds its place in them, so the new
+    /// section comes out in the same coordinates.
+    func iniciar(mapa: ARWorldMap?) {
+        mapaInicial = mapa
+        iniciar()
+    }
+
     func iniciar() {
         candado.lock()
         fotogramas.removeAll()
@@ -135,9 +154,47 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         fotos = 0
         liberarCamara()
         inicioSesion = Date()
+        vioReubicando = false
+        ubicado = mapaInicial == nil
+        nodoSecciones.isHidden = !ubicado
         vista.session.run(configuracion(), options: [.resetTracking, .removeExistingAnchors])
         capturando = true
         escaneando = true
+    }
+
+    /// Shows the earlier sections (their PLY) faintly as a guide.
+    func mostrarSecciones(_ carpetas: [URL]) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let nodos = carpetas.compactMap { carpeta -> SCNNode? in
+                guard let ply = try? PLY.leer(carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)) else { return nil }
+                let nodo = EscenaMalla.nodo(ply)
+                for material in nodo.geometry?.materials ?? [] {
+                    material.transparency = 0.35
+                    material.writesToDepthBuffer = false
+                    material.lightingModel = .constant
+                }
+                return nodo
+            }
+            DispatchQueue.main.async { nodos.forEach { self?.nodoSecciones.addChildNode($0) } }
+        }
+    }
+
+    /// Current world map (without the mesh, which each section saves itself),
+    /// for scanning more sections later. Call it before pausing.
+    func obtenerMapa(_ listo: @escaping (ARWorldMap?) -> Void) {
+        vista.session.getCurrentWorldMap { mapa, _ in
+            if let mapa { mapa.anchors = mapa.anchors.filter { !($0 is ARMeshAnchor) } }
+            DispatchQueue.main.async { listo(mapa) }
+        }
+    }
+
+    static func guardarMapa(_ mapa: ARWorldMap, en url: URL) throws {
+        try NSKeyedArchiver.archivedData(withRootObject: mapa, requiringSecureCoding: true).write(to: url, options: .atomic)
+    }
+
+    static func leerMapa(_ url: URL) -> ARWorldMap? {
+        guard let datos = try? Data(contentsOf: url) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: datos)
     }
 
     /// Continues after a pause keeping what was scanned.
@@ -176,11 +233,17 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
     }
 
     /// Saves the scan into `carpeta`, returning the vertex and triangle count.
-    static func guardar(_ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String) throws -> (vertices: Int, triangulos: Int) {
+    /// - Parameter ocupado: cells earlier sections already cover (`Secciones.celdas`).
+    static func guardar(
+        _ piezas: [PiezaMalla], fotogramas: [Fotograma], captura: UIImage?, en carpeta: URL, nombre: String,
+        ocupado: Set<SIMD3<Int32>> = []
+    ) throws -> (vertices: Int, triangulos: Int) {
         // One welded, cleaned mesh instead of ARKit's loose pieces.
         // Clean, straighten walls, floor and ceiling (ARKit's classification), then
         // zip up the cracks between ARKit's pieces, now that both sides are coplanar.
         var malla = LimpiezaMalla.cerrarRendijas(Planos.regularizar(LimpiezaMalla.limpiar(Texturizar.unir(piezas))))
+        // A new section drops what the earlier ones already have.
+        malla = LimpiezaMalla.quitarTraslape(malla, ocupado: ocupado)
         var fotogramas = fotogramas
         var etiquetas: [Int32] = []
         if !fotogramas.isEmpty {
@@ -220,8 +283,33 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         return totales
     }
 
+    /// All sections as one USDZ (with their textures) and one PLY, for AR and
+    /// for other programs.
+    static func unirSecciones(_ carpetas: [URL], en proyecto: URL) throws {
+        let escena = SCNScene()
+        var piezas: [PiezaMalla] = []
+        for carpeta in carpetas {
+            let bin = carpeta.appendingPathComponent(ArchivoProyecto.texturaBIN.rawValue)
+            let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue)
+            let ply = try? PLY.leer(carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue))
+            if let datos = try? Data(contentsOf: bin), let malla = try? Texturizar.leer(datos) {
+                let parte = EscenaMalla.escena(malla) { foto in fotos.appendingPathComponent(Texturizar.nombreFoto(foto)) }
+                parte.rootNode.childNodes.forEach { escena.rootNode.addChildNode($0) }
+            } else if let ply {
+                escena.rootNode.addChildNode(EscenaMalla.nodo(ply))
+            }
+            if let ply { piezas.append(PiezaMalla(ply)) }
+        }
+        let usdz = proyecto.appendingPathComponent(ArchivoProyecto.completoUSDZ.rawValue)
+        try? FileManager.default.removeItem(at: usdz)
+        _ = escena.write(to: usdz, options: nil, delegate: nil, progressHandler: nil)
+        if !piezas.isEmpty {
+            try PLY.escribir(piezas, en: proyecto.appendingPathComponent(ArchivoProyecto.completoPLY.rawValue))
+        }
+    }
+
     /// Projects the photos onto the mesh, packs the pieces it uses into up to
-    /// three 4096 px texture images with blended seams, and writes `textura.bin`
+    /// eight 4096 px texture images with blended seams, and writes `textura.bin`
     /// plus the `textura/` folder (OBJ, MTL and those images).
     private static func guardarTextura(_ malla: PiezaMalla, etiquetas: [Int32], fotogramas: [Fotograma], en carpeta: URL) throws -> MallaTexturizada? {
         let conFoto = fotogramas.filter { $0.archivo != nil }
@@ -229,7 +317,10 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         let tamanos = conFoto.map { f in f.archivo.flatMap(ImagenesIO.tamano) ?? SIMD2(f.ancho, f.alto) }
         guard etiquetas.contains(where: { $0 >= 0 }) else { return nil }
         let uvs = Texturizar.uvs(malla, etiquetas: etiquetas, fotogramas: conFoto)
-        let plan = Atlas.planificar(malla, etiquetas: etiquetas, uvFoto: uvs, fotogramas: conFoto, tamanos: tamanos)
+        let plan = Atlas.planificar(
+            malla, etiquetas: etiquetas, uvFoto: uvs, fotogramas: conFoto, tamanos: tamanos,
+            maximoAtlas: Atlas.maximoAtlas(area: Atlas.area(malla))
+        )
 
         let fotos = carpeta.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue, isDirectory: true)
         try FileManager.default.createDirectory(at: fotos, withIntermediateDirectories: true)
@@ -292,6 +383,17 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
             camaraBloqueada = true
             bloquearCamara()
         }
+        if !ubicado {
+            switch frame.camera.trackingState {
+            case .limited(.relocalizing): vioReubicando = true
+            case .normal where vioReubicando:
+                DispatchQueue.main.async {
+                    self.ubicado = true
+                    self.nodoSecciones.isHidden = false
+                }
+            default: break
+            }
+        }
         tomarFotoSiConviene(frame)
         guard Date().timeIntervalSince(ultimoConteo) > 0.5 else { return }
         ultimoConteo = Date()
@@ -321,7 +423,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         // Skip blurry photos: only shoot while the iPhone is almost still.
         let anterior = fotoAnterior
         fotoAnterior = (t, frame.timestamp)
-        guard capturando, !procesandoFoto, case .normal = camara.trackingState else { return }
+        guard capturando, ubicado, !procesandoFoto, case .normal = camara.trackingState else { return }
         guard Date().timeIntervalSince(ultimaFotoFecha) > 0.4 else { return }
         if let anterior, frame.timestamp > anterior.tiempo {
             let dt = Float(frame.timestamp - anterior.tiempo)
@@ -495,7 +597,7 @@ final class MallaLiDAR: NSObject, ObservableObject, ARSCNViewDelegate, ARSession
         case .limited(.excessiveMotion): return "Más despacio."
         case .limited(.insufficientFeatures): return "Apunta a una zona con más detalle o luz."
         case .limited(.initializing): return "Iniciando… mueve el iPhone un poco."
-        case .limited(.relocalizing): return "Recuperando la posición…"
+        case .limited(.relocalizing): return "Ubicándose… apunta a una zona que ya escaneaste."
         case .limited: return "Seguimiento limitado."
         }
     }

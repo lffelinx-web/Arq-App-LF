@@ -1,3 +1,4 @@
+import ARKit
 import SwiftUI
 
 // MARK: - Cuarto (RoomPlan)
@@ -129,6 +130,8 @@ private struct CapturaCuarto: View {
 // MARK: - Malla LiDAR
 
 struct PantallaMalla: View {
+    /// Project to add a section to (large spaces scanned in parts), or nil for a new scan.
+    var continuar: Proyecto?
     var alGuardar: (Proyecto) -> Void
     @Environment(Almacen.self) private var almacen
     @Environment(\.dismiss) private var cerrar
@@ -137,16 +140,22 @@ struct PantallaMalla: View {
     @State private var nombre = ""
     @State private var guardando = false
     @State private var error: String?
+    @State private var mapa: ARWorldMap?
 
     var body: some View {
         ZStack {
             VistaUIKit(vista: escaner.vista).ignoresSafeArea()
             VStack(spacing: 10) {
-                BarraCaptura(titulo: "Escaneo 3D") {
+                BarraCaptura(titulo: continuar.map { "Sección \(numeroSeccion($0))" } ?? "Escaneo 3D") {
                     escaner.cerrar()
                     cerrar()
                 }
                 Pastilla(texto: escaner.escaneando ? escaner.aviso : "Escaneo en pausa")
+                if continuar != nil {
+                    Pastilla(texto: escaner.ubicado
+                             ? "Ubicado: lo anterior se ve en gris. Escanea la zona nueva."
+                             : "Regresa a una zona que ya escaneaste y apunta despacio hasta ubicarte.")
+                }
                 Pastilla(texto: "\(escaner.triangulos.formatted()) triángulos · \(escaner.fotos) fotos para textura")
                 HStack(spacing: 12) {
                     Label("Con foto", systemImage: "circle.fill").foregroundStyle(Color(red: 0.30, green: 0.85, blue: 0.55))
@@ -168,19 +177,27 @@ struct PantallaMalla: View {
                             .background(Tema.azul, in: Circle())
                     }
                     BotonCaptura(icono: "checkmark", titulo: "Guardar") {
-                        escaner.pausar()
-                        nombre = almacen.nombreSugerido(.malla)
-                        pidiendoNombre = true
+                        // The world map is read while the session still runs.
+                        escaner.obtenerMapa { mapa in
+                            self.mapa = mapa
+                            escaner.pausar()
+                            if continuar != nil {
+                                guardar()
+                            } else {
+                                nombre = almacen.nombreSugerido(.malla)
+                                pidiendoNombre = true
+                            }
+                        }
                     }
-                    .disabled(escaner.triangulos == 0)
-                    .opacity(escaner.triangulos == 0 ? 0.5 : 1)
+                    .disabled(escaner.triangulos == 0 || !escaner.ubicado)
+                    .opacity(escaner.triangulos == 0 || !escaner.ubicado ? 0.5 : 1)
                 }
                 .padding(.bottom, 24)
             }
             .padding(.horizontal, 16)
             if guardando { Guardando(texto: "Creando la textura…\nPuede tardar unos segundos.") }
         }
-        .onAppear { escaner.iniciar() }
+        .onAppear(perform: empezar)
         .alert("Guardar escaneo", isPresented: $pidiendoNombre) {
             TextField("Nombre", text: $nombre)
             Button("Guardar") { guardar() }
@@ -191,7 +208,28 @@ struct PantallaMalla: View {
         } message: { Text(error ?? "") }
     }
 
+    private func numeroSeccion(_ proyecto: Proyecto) -> Int {
+        Secciones.siguiente(en: almacen.carpeta(proyecto))
+    }
+
+    private func empezar() {
+        guard let continuar else {
+            escaner.iniciar()
+            return
+        }
+        guard let mapa = MallaLiDAR.leerMapa(almacen.url(.mapa, de: continuar)) else {
+            error = "Este escaneo no guardó su mapa de ubicación, así que no se le pueden agregar secciones. Los escaneos nuevos sí lo guardan."
+            return
+        }
+        escaner.iniciar(mapa: mapa)
+        escaner.mostrarSecciones(Secciones.carpetas(en: almacen.carpeta(continuar)))
+    }
+
     private func guardar() {
+        if let continuar {
+            guardarSeccion(de: continuar)
+            return
+        }
         guardando = true
         let piezas = escaner.piezas()
         let fotogramas = escaner.fotosTomadas()
@@ -201,6 +239,7 @@ struct PantallaMalla: View {
         Task { @MainActor in
             do {
                 let carpeta = try almacen.preparar(proyectoBase)
+                if let mapa { try? MallaLiDAR.guardarMapa(mapa, en: almacen.url(.mapa, de: proyectoBase)) }
                 let nombreArchivo = proyectoBase.nombre
                 let totales = try await Task.detached(priority: .userInitiated) {
                     try MallaLiDAR.guardar(piezas, fotogramas: fotogramas, captura: captura, en: carpeta, nombre: nombreArchivo)
@@ -209,6 +248,51 @@ struct PantallaMalla: View {
                 proyecto.vertices = totales.vertices
                 proyecto.triangulos = totales.triangulos
                 proyecto.fotos = fotogramas.count
+                try almacen.guardar(proyecto)
+                guardando = false
+                alGuardar(proyecto)
+            } catch {
+                guardando = false
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// Saves the scan as the next section of `base`, without what earlier
+    /// sections already cover, and rebuilds the combined model.
+    private func guardarSeccion(de base: Proyecto) {
+        guardando = true
+        let piezas = escaner.piezas()
+        let fotogramas = escaner.fotosTomadas()
+        escaner.cerrar()
+        let raiz = almacen.carpeta(base)
+        let numero = Secciones.siguiente(en: raiz)
+        let anteriores = Secciones.carpetas(en: raiz)
+        let nombreArchivo = "\(base.nombre) seccion \(numero)"
+        let urlMapa = almacen.url(.mapa, de: base)
+        let mapa = self.mapa
+        Task { @MainActor in
+            do {
+                let totales = try await Task.detached(priority: .userInitiated) { () throws -> (vertices: Int, triangulos: Int) in
+                    var ocupado = Set<SIMD3<Int32>>()
+                    for carpeta in anteriores {
+                        if let ply = try? PLY.leer(carpeta.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)) {
+                            ocupado.formUnion(Secciones.celdas(ply))
+                        }
+                    }
+                    let carpeta = Secciones.carpeta(numero, en: raiz)
+                    try FileManager.default.createDirectory(at: carpeta, withIntermediateDirectories: true)
+                    let totales = try MallaLiDAR.guardar(piezas, fotogramas: fotogramas, captura: nil, en: carpeta, nombre: nombreArchivo, ocupado: ocupado)
+                    if let mapa { try? MallaLiDAR.guardarMapa(mapa, en: urlMapa) }
+                    try MallaLiDAR.unirSecciones(anteriores + [carpeta], en: raiz)
+                    return totales
+                }.value
+                var proyecto = base
+                proyecto.secciones = numero
+                proyecto.vertices += totales.vertices
+                proyecto.triangulos += totales.triangulos
+                proyecto.fotos = (proyecto.fotos ?? 0) + fotogramas.count
+                proyecto.fecha = Date()
                 try almacen.guardar(proyecto)
                 guardando = false
                 alGuardar(proyecto)

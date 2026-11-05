@@ -23,6 +23,9 @@ struct DetalleView: View {
     @State private var renombrando = false
     @State private var nuevoNombre = ""
     @State private var confirmarBorrado = false
+    @State private var agregandoSeccion = false
+    /// Changes when a section is added, so the viewer reloads.
+    @State private var version = 0
 
     init(proyecto: Proyecto) {
         _proyecto = State(initialValue: proyecto)
@@ -38,13 +41,26 @@ struct DetalleView: View {
         }
     }
 
-    private var modelo: URL? {
+    /// Model files for the viewer: one per section for mesh scans.
+    private var modelos: [URL] {
         if proyecto.tipo == .malla {
-            for archivo in [ArchivoProyecto.texturaBIN, .mallaPLY, .mallaOBJ] where almacen.existe(archivo, de: proyecto) {
-                return almacen.url(archivo, de: proyecto)
+            let fm = FileManager.default
+            let urls = Secciones.carpetas(en: almacen.carpeta(proyecto)).compactMap { carpeta in
+                [ArchivoProyecto.texturaBIN, .mallaPLY, .mallaOBJ]
+                    .map { carpeta.appendingPathComponent($0.rawValue) }
+                    .first { fm.fileExists(atPath: $0.path) }
             }
+            if !urls.isEmpty { return urls }
         }
-        if almacen.existe(.modeloUSDZ, de: proyecto) { return almacen.url(.modeloUSDZ, de: proyecto) }
+        if almacen.existe(.modeloUSDZ, de: proyecto) { return [almacen.url(.modeloUSDZ, de: proyecto)] }
+        return []
+    }
+
+    /// The whole project for AR: all sections together when there are several.
+    private var modeloAR: URL? {
+        for archivo in [ArchivoProyecto.completoUSDZ, .modeloUSDZ] where almacen.existe(archivo, de: proyecto) {
+            return almacen.url(archivo, de: proyecto)
+        }
         return nil
     }
 
@@ -77,8 +93,11 @@ struct DetalleView: View {
                     }
                 }
                 Menu {
-                    if almacen.existe(.modeloUSDZ, de: proyecto) {
-                        Button { vistaAR = almacen.url(.modeloUSDZ, de: proyecto) } label: { Label("Ver en AR", systemImage: "arkit") }
+                    if let modeloAR {
+                        Button { vistaAR = modeloAR } label: { Label("Ver en AR", systemImage: "arkit") }
+                    }
+                    if proyecto.tipo == .malla, almacen.existe(.mapa, de: proyecto) {
+                        Button { agregandoSeccion = true } label: { Label("Agregar sección", systemImage: "plus.square.dashed") }
                     }
                     Button {
                         nuevoNombre = proyecto.nombre
@@ -91,6 +110,18 @@ struct DetalleView: View {
             }
         }
         .quickLookPreview($vistaAR)
+        .fullScreenCover(isPresented: $agregandoSeccion) {
+            ConPermisoCamara {
+                PantallaMalla(continuar: proyecto) { actualizado in
+                    proyecto = actualizado
+                    agregandoSeccion = false
+                    version += 1
+                    pestana = .modelo
+                    Task { await prepararArchivos() }
+                }
+            }
+            .environment(almacen)
+        }
         .alert("Renombrar", isPresented: $renombrando) {
             TextField("Nombre", text: $nuevoNombre)
             Button("Guardar") {
@@ -117,8 +148,9 @@ struct DetalleView: View {
     @ViewBuilder private var contenido: some View {
         switch pestana {
         case .modelo:
-            if let modelo {
-                Visor3D(url: modelo)
+            if !modelos.isEmpty {
+                Visor3D(urls: modelos)
+                    .id(version)
                     .overlay(alignment: .bottom) {
                         Pastilla(texto: "Arrastra para girar · pellizca para acercar")
                             .padding(.bottom, 12)
@@ -166,16 +198,33 @@ struct DetalleView: View {
             if let dxf = Exportacion.texto(DXF.texto(plano, unidad: unidad), como: "\(base)-plano.dxf", en: carpeta) { urls.append(dxf) }
             if let csv = Exportacion.texto(CSV.plano(plano), como: "\(base)-medidas.csv", en: carpeta) { urls.append(csv) }
         }
+        let varias = (proyecto.secciones ?? 1) > 1
+        let primera = varias ? "\(base)-seccion-1" : base
         let copias: [(ArchivoProyecto, String)] = [
-            (.modeloUSDZ, "\(base).usdz"), (.mallaPLY, "\(base).ply"), (.mallaOBJ, "\(base).obj"), (.plano, "\(base)-plano.json"), (.foto, "\(base).jpg"),
+            (.completoUSDZ, "\(base)-completo.usdz"), (.completoPLY, "\(base)-completo.ply"),
+            (.modeloUSDZ, "\(primera).usdz"), (.mallaPLY, "\(primera).ply"), (.mallaOBJ, "\(primera).obj"), (.plano, "\(base)-plano.json"), (.foto, "\(base).jpg"),
         ]
         for (archivo, nombre) in copias where almacen.existe(archivo, de: proyecto) {
             if let copia = Exportacion.copia(almacen.url(archivo, de: proyecto), como: nombre, en: carpeta) { urls.append(copia) }
         }
+        var zips: [URL] = []
         if almacen.existe(.carpetaTextura, de: proyecto),
-           let zip = Exportacion.zip(almacen.url(.carpetaTextura, de: proyecto), como: "\(base)-texturizado.zip", en: carpeta) {
-            urls.insert(zip, at: 0)
+           let zip = Exportacion.zip(almacen.url(.carpetaTextura, de: proyecto), como: "\(primera)-texturizado.zip", en: carpeta) {
+            zips.append(zip)
         }
+        // Later sections: their textured OBJ and PLY.
+        for (i, seccion) in Secciones.carpetas(en: almacen.carpeta(proyecto)).enumerated().dropFirst() {
+            let nombre = "\(base)-seccion-\(seccion.lastPathComponent)"
+            let texturas = seccion.appendingPathComponent(ArchivoProyecto.carpetaTextura.rawValue)
+            if FileManager.default.fileExists(atPath: texturas.path), let zip = Exportacion.zip(texturas, como: "\(nombre)-texturizado.zip", en: carpeta) {
+                zips.append(zip)
+            }
+            let ply = seccion.appendingPathComponent(ArchivoProyecto.mallaPLY.rawValue)
+            if i > 0, FileManager.default.fileExists(atPath: ply.path), let copia = Exportacion.copia(ply, como: "\(nombre).ply", en: carpeta) {
+                urls.append(copia)
+            }
+        }
+        urls.insert(contentsOf: zips, at: 0)
         if proyecto.tipo == .medidas, !proyecto.medidas.isEmpty,
            let csv = Exportacion.texto(CSV.medidas(proyecto.medidas), como: "\(base)-medidas.csv", en: carpeta) {
             urls.append(csv)
@@ -297,6 +346,9 @@ private struct HojaDatos: View {
     private var datosMalla: some View {
         Tarjeta {
             VStack(spacing: 10) {
+                if let secciones = proyecto.secciones, secciones > 1 {
+                    FilaDato(titulo: "Secciones", valor: "\(secciones)", icono: "square.split.2x2")
+                }
                 FilaDato(titulo: "Vértices", valor: proyecto.vertices.formatted(), icono: "circle.grid.3x3")
                 FilaDato(titulo: "Triángulos", valor: proyecto.triangulos.formatted(), icono: "triangle")
                 FilaDato(

@@ -3,9 +3,10 @@ import SceneKit
 import SceneKit.ModelIO
 import SwiftUI
 
-/// Orbit viewer for the USDZ, PLY and OBJ models.
+/// Orbit viewer for the USDZ, PLY and OBJ models. Several files (the
+/// sections of a large scan) are shown together.
 struct Visor3D: View {
-    let url: URL
+    let urls: [URL]
     @State private var escena: SCNScene?
     @State private var fallo = false
 
@@ -20,19 +21,35 @@ struct Visor3D: View {
                 ProgressView("Cargando modelo…")
             }
         }
-        .task(id: url) {
-            let origen = url
+        .task(id: urls) {
+            let origen = urls
             let cargada = await Task.detached(priority: .userInitiated) { Self.cargar(origen) }.value
             escena = cargada
             fallo = cargada == nil
         }
     }
 
-    nonisolated static func cargar(_ url: URL) -> SCNScene? {
+    /// All the files in one scene. Texture images share one memory budget, so
+    /// many sections get smaller copies of their atlases.
+    nonisolated static func cargar(_ urls: [URL]) -> SCNScene? {
+        guard urls.count > 1 else { return urls.first.flatMap { cargar($0, lado: nil) } }
+        let atlas = urls.reduce(0) { suma, url in
+            guard url.pathExtension.lowercased() == "bin", let datos = try? Data(contentsOf: url), let malla = try? Texturizar.leer(datos) else { return suma }
+            return suma + malla.grupos.count
+        }
+        let lado = EscenaMalla.ladoVisor(atlas: atlas)
+        let escena = SCNScene()
+        for url in urls {
+            cargar(url, lado: lado)?.rootNode.childNodes.forEach { escena.rootNode.addChildNode($0) }
+        }
+        return escena.rootNode.childNodes.isEmpty ? nil : escena
+    }
+
+    nonisolated static func cargar(_ url: URL, lado: Int?) -> SCNScene? {
         let escena: SCNScene?
         let extension_ = url.pathExtension.lowercased()
         if extension_ == "bin" {
-            escena = EscenaMalla.escenaTexturizada(url)
+            escena = lado.map { EscenaMalla.escenaTexturizada(url, lado: $0) } ?? EscenaMalla.escenaTexturizada(url)
         } else if extension_ == "ply" {
             escena = (try? PLY.leer(url)).map(EscenaMalla.escena)
         } else if extension_ == "obj" {

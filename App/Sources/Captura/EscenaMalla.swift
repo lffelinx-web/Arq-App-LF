@@ -79,7 +79,14 @@ enum EscenaMalla {
     /// image per photo (many of them), so those are shrunk to fit in the GPU.
     static func escenaTexturizada(_ url: URL) -> SCNScene? {
         guard let datos = try? Data(contentsOf: url), let malla = try? Texturizar.leer(datos) else { return nil }
-        return escenaTexturizada(url, lado: malla.grupos.count <= 4 ? 4096 : 1024)
+        return escenaTexturizada(url, lado: ladoVisor(atlas: malla.grupos.count))
+    }
+
+    /// Side of the images the viewer loads: about four 4096 px atlases in all,
+    /// split among however many there are, and never under 1024 px.
+    static func ladoVisor(atlas: Int) -> Int {
+        guard atlas > 4 else { return 4096 }
+        return min(4096, max(1024, Int(4096 * (4 / Float(atlas)).squareRoot())))
     }
 
     static func escenaTexturizada(_ url: URL, lado: Int) -> SCNScene? {

@@ -37,7 +37,7 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 
 ## Fase 2
 
-- **Malla con color real:** durante el escaneo 3D se guardan hasta 90 fotos (cada vez que el iPhone se mueve o gira lo suficiente). Al guardar, cada vértice toma el color de la foto que lo vio más de cerca y de frente, usando la profundidad del LiDAR para no pintar lo que estaba tapado. Se exporta como **PLY** (con color, para MeshLab, Blender y CloudCompare), **OBJ** con color por vértice y **USDZ**.
+- **Malla con color real:** durante el escaneo 3D se guardan hasta 160 fotos (cada vez que el iPhone se mueve o gira lo suficiente). Al guardar, cada vértice toma el color de la foto que lo vio más de cerca y de frente, usando la profundidad del LiDAR para no pintar lo que estaba tapado. Se exporta como **PLY** (con color, para MeshLab, Blender y CloudCompare), **OBJ** con color por vértice y **USDZ**.
 - **Varios cuartos:** después de terminar un cuarto, *Otro* escanea el siguiente con las mismas coordenadas y al guardar RoomPlan los une en un solo modelo y un solo plano.
 - **DXF:** el plano se exporta para AutoCAD y otros programas CAD, en metros, con capas MUROS, PUERTAS, VENTANAS, VANOS, MUEBLES, PISO y COTAS.
 
@@ -63,3 +63,11 @@ Mientras falten los secrets, la subida a TestFlight se omite y el resto de la co
 - **Sin personas:** la segmentación de personas de Apple (Vision) marca a la gente en cada foto y esas zonas nunca se usan para la textura, los colores ni la igualación de exposición.
 - **Sin rendijas:** después de enderezar los planos, las orillas abiertas que quedan a menos de 2.5 cm de otra orilla (piezas de ARKit que no se tocaban) se cosen como un cierre y se rellenan los huecos chicos que quedan; los triángulos que el enderezado volteó o aplastó regresan a su posición original.
 - **Sin manchas sin foto:** las zonas que ninguna foto vio bien y que cuelgan de la orilla del escaneo (tus pies y piernas al escanear, cosas vistas solo de lado) y las piezas sueltas sin foto se quitan antes de texturizar; los huecos sin foto rodeados de textura se conservan y toman el color de sus vecinos.
+
+## Espacios grandes (iglesias, naves, bodegas)
+
+- **Escaneo por secciones:** cada escaneo 3D guarda el mapa de ubicación de ARKit. Desde el proyecto, *⋯ → Agregar sección* abre la cámara; regresa a una zona ya escaneada y apunta despacio hasta que diga "Ubicado". Lo anterior se ve en gris y la sección nueva queda en las mismas coordenadas.
+- Cada sección tiene sus propias fotos (hasta 160) y su propio atlas de textura, así la textura queda nítida aunque el espacio sea enorme. Lo que la sección nueva vuelve a escanear de las anteriores se quita para no duplicar superficies.
+- El visor muestra todas las secciones juntas, y *Ver en AR* y la exportación incluyen el modelo completo (**USDZ** y **PLY**) además de cada sección por separado.
+- **Atlas adaptable:** hasta 4 imágenes de 4096 px para zonas de hasta 60 m², 6 hasta 150 m² y 8 para zonas más grandes.
+- El LiDAR alcanza unos 5 m: bóvedas y cúpulas altas quedan fuera del escaneo.
