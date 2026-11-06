@@ -17,13 +17,23 @@ on:
       detalle:
         description: Detalle de Object Capture (reduced, medium, full)
         default: medium
+      metodos:
+        description: Qué correr
+        type: choice
+        options: [todos, colmap, objectcapture, vistas]
+        default: todos
+      corrida:
+        description: Solo para "vistas" - número de corrida (run id) con el modelo de COLMAP
+        default: ""
 permissions:
   contents: write
+  actions: read
 concurrency:
-  group: fotogrametria
+  group: fotogrametria-${{ inputs.metodos }}
   cancel-in-progress: false
 jobs:
   descargar:
+    if: inputs.metodos != 'vistas'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -70,6 +80,7 @@ jobs:
 
   colmap-openmvs:
     needs: descargar
+    if: inputs.metodos == 'todos' || inputs.metodos == 'colmap'
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     steps:
@@ -145,7 +156,9 @@ jobs:
 
   object-capture:
     needs: descargar
-    runs-on: macos-15
+    if: inputs.metodos == 'todos' || inputs.metodos == 'objectcapture'
+    # Apple silicon (arm64): Object Capture needs its GPU.
+    runs-on: macos-26
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
@@ -186,8 +199,8 @@ jobs:
 
   vistas-colmap:
     needs: colmap-openmvs
-    if: always() && needs.colmap-openmvs.result == 'success'
-    runs-on: macos-15
+    if: always() && (needs.colmap-openmvs.result == 'success' || inputs.metodos == 'vistas')
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -195,6 +208,8 @@ jobs:
         with:
           name: modelo-colmap
           path: colmap
+          run-id: ${{ inputs.corrida != '' && inputs.corrida || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Convertir a USDZ y hacer vistas
         run: |
           swiftc -O herramientas/Vistas.swift -o vistas
@@ -212,7 +227,7 @@ jobs:
 
   publicar:
     needs: [descargar, colmap-openmvs, object-capture, vistas-colmap]
-    if: always()
+    if: always() && (needs.object-capture.result == 'success' || needs.vistas-colmap.result == 'success' || needs.colmap-openmvs.result != 'skipped')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
