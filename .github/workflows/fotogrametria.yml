@@ -20,10 +20,10 @@ on:
       metodos:
         description: Qué correr
         type: choice
-        options: [todos, colmap, objectcapture, vistas]
+        options: [todos, colmap, openmvs, objectcapture, vistas]
         default: todos
       corrida:
-        description: Solo para "vistas" - número de corrida (run id) con el modelo de COLMAP
+        description: Solo para "openmvs" y "vistas" - número de corrida (run id) de donde tomar la alineación o el modelo
         default: ""
 permissions:
   contents: write
@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   descargar:
-    if: inputs.metodos != 'vistas'
+    if: inputs.metodos != 'vistas' && inputs.metodos != 'openmvs'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -78,73 +78,117 @@ jobs:
           path: fotos
           retention-days: 1
 
-  colmap-openmvs:
+  colmap-sfm:
     needs: descargar
     if: inputs.metodos == 'todos' || inputs.metodos == 'colmap'
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 350
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: fotos
           path: fotos
-      - name: Instalar COLMAP y OpenMVS
+      - name: Instalar COLMAP
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq colmap > /dev/null
-          colmap -h | head -3 || true
-          docker pull -q openmvs/openmvs-ubuntu:latest
-          docker run --rm openmvs/openmvs-ubuntu:latest sh -c 'ls /usr/local/bin/OpenMVS 2>/dev/null || find / -name DensifyPointCloud -type f 2>/dev/null | head -3'
           nproc; free -h; df -h .
-      - name: Procesar
+      - name: Alinear fotos (COLMAP)
         run: |
           set -euo pipefail
           export QT_QPA_PLATFORM=offscreen
           T0=$(date +%s)
-          marca() { echo "$1: $(( ($(date +%s) - T0) / 60 )) min" | tee -a tiempos.txt; }
+          marca() { echo "$1: $(( ($(date +%s) - T0) / 60 )) min" | tee -a tiempos-sfm.txt; }
+          N=$(ls fotos | wc -l)
+          echo "Fotos: $N" | tee tiempos-sfm.txt
+          # 2000 px and 6000 points per photo are plenty to align them, and much faster.
+          colmap feature_extractor --database_path db.db --image_path fotos \
+            --ImageReader.camera_model OPENCV \
+            --SiftExtraction.use_gpu 0 --SiftExtraction.max_image_size 2000 --SiftExtraction.max_num_features 6000
+          marca "Puntos clave"
+          if [ "$N" -le 200 ]; then
+            colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 0
+          else
+            colmap sequential_matcher --database_path db.db --SiftMatching.use_gpu 0 --SequentialMatching.overlap 20
+          fi
+          marca "Emparejado"
+          mkdir -p sparse
+          colmap mapper --database_path db.db --image_path fotos --output_path sparse \
+            --Mapper.ba_global_images_ratio 1.3 --Mapper.ba_global_points_ratio 1.3 --Mapper.ba_global_max_num_iterations 30
+          marca "Alineación (SfM)"
+          # The model with most registered photos.
+          MEJOR=$(for m in sparse/*/; do echo "$(colmap model_analyzer --path "$m" 2>&1 | grep -i 'Registered images' | grep -o '[0-9]*$') $m"; done | sort -nr | head -1)
+          echo "Modelo elegido (fotos alineadas, carpeta): $MEJOR" | tee -a tiempos-sfm.txt
+          MODELO=$(echo "$MEJOR" | awk '{print $2}')
+          colmap image_undistorter --image_path fotos --input_path "$MODELO" --output_path densa --output_type COLMAP --max_image_size 2000
+          # The OpenMVS build reads the cameras as text.
+          colmap model_converter --input_path densa/sparse --output_path densa/sparse --output_type TXT
+          marca "Corrección de lente"
+          mkdir -p resultados/colmap
+          cp tiempos-sfm.txt resultados/colmap/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sfm
+          path: densa
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tiempos-sfm
+          path: tiempos-sfm.txt
+          retention-days: 3
+
+  colmap-openmvs:
+    needs: colmap-sfm
+    if: always() && (needs.colmap-sfm.result == 'success' || inputs.metodos == 'openmvs')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sfm
+          path: densa
+          run-id: ${{ inputs.corrida != '' && inputs.corrida || github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: tiempos-sfm
+          run-id: ${{ inputs.corrida != '' && inputs.corrida || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Instalar OpenMVS
+        run: |
+          docker pull -q openmvs/openmvs-ubuntu:latest
+          ls densa densa/sparse | head; ls densa/images | wc -l
+      - name: Nube densa, malla y textura (OpenMVS)
+        run: |
+          set -euo pipefail
+          T0=$(date +%s)
+          marca() { echo "$1: $(( ($(date +%s) - T0) / 60 )) min" | tee -a tiempos-mvs.txt; }
           mvs() {
             docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w openmvs/openmvs-ubuntu:latest \
               sh -c "export PATH=\$PATH:/usr/local/bin/OpenMVS:/openMVS_build/bin; $*"
           }
-          N=$(ls fotos | wc -l)
-          echo "Fotos: $N" | tee tiempos.txt
-          colmap feature_extractor --database_path db.db --image_path fotos \
-            --ImageReader.camera_model OPENCV --SiftExtraction.use_gpu 0 --SiftExtraction.max_num_features 8192
-          marca "Puntos clave"
-          if [ "$N" -le 250 ]; then
-            colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 0
-          else
-            colmap sequential_matcher --database_path db.db --SiftMatching.use_gpu 0 --SequentialMatching.overlap 25
-          fi
-          marca "Emparejado"
-          mkdir -p sparse
-          colmap mapper --database_path db.db --image_path fotos --output_path sparse
-          marca "Alineación (SfM)"
-          # The model with most registered photos.
-          MEJOR=$(for m in sparse/*/; do echo "$(colmap model_analyzer --path "$m" 2>&1 | grep -i 'Registered images' | grep -o '[0-9]*$') $m"; done | sort -nr | head -1)
-          echo "Modelo elegido: $MEJOR" | tee -a tiempos.txt
-          MODELO=$(echo "$MEJOR" | awk '{print $2}')
-          colmap image_undistorter --image_path fotos --input_path "$MODELO" --output_path densa --output_type COLMAP --max_image_size 2400
-          marca "Corrección de lente"
+          echo "OpenMVS" > tiempos-mvs.txt
           mvs InterfaceCOLMAP -i densa -o escena.mvs --image-folder densa/images
+          marca "Importar"
+          # Half resolution (1000 px) for the depth maps; full resolution for the texture.
           mvs DensifyPointCloud escena.mvs --resolution-level 1 --max-threads 0
           marca "Nube densa"
-          ls -la
-          mvs ReconstructMesh escena_dense.mvs -o escena_malla.mvs
+          mvs ReconstructMesh escena_dense.mvs
           marca "Malla"
-          ls -la
-          MALLA=$(ls -t escena_malla*.ply escena_dense_mesh*.ply 2>/dev/null | head -1 || true)
-          mvs TextureMesh escena_dense.mvs -m "$MALLA" -o modelo.mvs --export-type obj --decimate 0.5
+          mvs TextureMesh escena_dense_mesh.mvs --export-type obj
           marca "Textura"
+          ls -la
           mkdir -p modelo
-          mv modelo*.obj modelo*.mtl modelo*.png modelo*.jpg modelo/ 2>/dev/null || true
+          mv escena_dense_mesh_texture*.obj escena_dense_mesh_texture*.mtl escena_dense_mesh_texture*.png escena_dense_mesh_texture*.jpg modelo/ 2>/dev/null || true
           ls -la modelo
           du -sh modelo
       - name: Guardar tiempos
         if: always()
         run: |
           mkdir -p resultados/colmap
-          cp tiempos.txt resultados/colmap/ 2>/dev/null || echo "Sin tiempos" > resultados/colmap/tiempos.txt
+          cat tiempos-sfm.txt tiempos-mvs.txt > resultados/colmap/tiempos.txt 2>/dev/null || cp tiempos-mvs.txt resultados/colmap/tiempos.txt || echo "Sin tiempos" > resultados/colmap/tiempos.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -226,7 +270,7 @@ jobs:
           retention-days: 3
 
   publicar:
-    needs: [descargar, colmap-openmvs, object-capture, vistas-colmap]
+    needs: [descargar, colmap-sfm, colmap-openmvs, object-capture, vistas-colmap]
     if: always() && (needs.object-capture.result == 'success' || needs.vistas-colmap.result == 'success' || needs.colmap-openmvs.result != 'skipped')
     runs-on: ubuntu-24.04
     steps:
@@ -238,7 +282,7 @@ jobs:
       - name: Subir vistas y tiempos a la rama de resultados
         env:
           FOTOS: ${{ needs.descargar.outputs.fotos }}
-          RESULTADOS: "descargar=${{ needs.descargar.result }} colmap=${{ needs.colmap-openmvs.result }} objectcapture=${{ needs.object-capture.result }} vistas=${{ needs.vistas-colmap.result }}"
+          RESULTADOS: "descargar=${{ needs.descargar.result }} sfm=${{ needs.colmap-sfm.result }} openmvs=${{ needs.colmap-openmvs.result }} objectcapture=${{ needs.object-capture.result }} vistas=${{ needs.vistas-colmap.result }}"
         run: |
           DESTINO=$(mktemp -d)
           RUN="${GITHUB_RUN_ID}"
