@@ -22,6 +22,9 @@ on:
         type: choice
         options: [todos, colmap, openmvs, objectcapture, vistas]
         default: todos
+      nivel:
+        description: Para OpenMVS - resolución de la nube densa (1 = mitad, 2 = cuarto, más rápido)
+        default: "2"
       corrida:
         description: Solo para "openmvs" y "vistas" - número de corrida (run id) de donde tomar la alineación o el modelo
         default: ""
@@ -156,6 +159,14 @@ jobs:
           name: tiempos-sfm
           run-id: ${{ inputs.corrida != '' && inputs.corrida || github.run_id }}
           github-token: ${{ github.token }}
+      - name: Memoria de intercambio
+        run: |
+          # 16 GB of RAM aren't enough to fuse 440 depth maps; add 24 GB of swap on the big disk.
+          df -h /mnt .
+          sudo swapoff -a || true
+          sudo fallocate -l 24G /mnt/intercambio && sudo chmod 600 /mnt/intercambio
+          sudo mkswap /mnt/intercambio > /dev/null && sudo swapon /mnt/intercambio
+          free -h
       - name: Instalar OpenMVS
         run: |
           docker pull -q openmvs/openmvs-ubuntu:latest
@@ -172,8 +183,9 @@ jobs:
           echo "OpenMVS" > tiempos-mvs.txt
           mvs InterfaceCOLMAP -i densa -o escena.mvs --image-folder images
           marca "Importar"
-          # Half resolution (1000 px) for the depth maps; full resolution for the texture.
-          mvs DensifyPointCloud escena.mvs --resolution-level 1 --max-threads 0
+          # Quarter resolution (500 px) for the depth maps, about 4 times faster and
+          # lighter than half; the texture still uses the full 2000 px photos.
+          mvs DensifyPointCloud escena.mvs --resolution-level ${{ inputs.nivel || '2' }} --max-threads 0
           marca "Nube densa"
           mvs ReconstructMesh escena_dense.mvs
           marca "Malla"
