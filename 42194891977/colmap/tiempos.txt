@@ -1,0 +1,6 @@
+Fotos: 468
+Puntos clave: 22 min
+Emparejado: 104 min
+Alineación (SfM): 206 min
+Modelo elegido: 444 sparse/1/
+Corrección de lente: 209 min
