@@ -31,11 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Descargar fotos de Google Drive
+        timeout-minutes: 40
         env:
           ENLACE: ${{ inputs.enlace }}
         run: |
           pip install --quiet gdown
-          python3 herramientas/descargar_drive.py "$ENLACE" crudas
+          python3 -u herramientas/descargar_drive.py "$ENLACE" crudas
           ls -la crudas | head -20
           du -sh crudas
       - name: Convertir a JPG, enderezar y reducir
