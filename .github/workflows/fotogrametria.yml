@@ -170,7 +170,7 @@ jobs:
               sh -c "export PATH=\$PATH:/usr/local/bin/OpenMVS:/openMVS_build/bin; $*"
           }
           echo "OpenMVS" > tiempos-mvs.txt
-          mvs InterfaceCOLMAP -i densa -o escena.mvs --image-folder /w/densa/images
+          mvs InterfaceCOLMAP -i densa -o escena.mvs --image-folder images
           marca "Importar"
           # Half resolution (1000 px) for the depth maps; full resolution for the texture.
           mvs DensifyPointCloud escena.mvs --resolution-level 1 --max-threads 0
