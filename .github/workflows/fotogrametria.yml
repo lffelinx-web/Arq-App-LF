@@ -266,14 +266,18 @@ jobs:
           path: colmap
           run-id: ${{ inputs.metodos == 'vistas' && inputs.corrida != '' && inputs.corrida || github.run_id }}
           github-token: ${{ github.token }}
+      # pymeshlab publishes wheels up to Python 3.12.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Reducir la malla
         run: |
           ls -la colmap colmap/modelo
-          python3 -m pip install --quiet --break-system-packages pymeshlab || python3 -m pip install --quiet pymeshlab
+          python -m pip install --quiet pymeshlab
           OBJ=$(ls colmap/modelo/*.obj | head -1)
           mkdir -p reducido
           cp colmap/modelo/*.jpg colmap/modelo/*.png reducido/ 2>/dev/null || true
-          python3 herramientas/reducir.py "$OBJ" reducido/modelo.obj 1500000
+          python herramientas/reducir.py "$OBJ" reducido/modelo.obj 1500000
           ls -la reducido
       - name: Convertir a USDZ y hacer vistas
         run: |
