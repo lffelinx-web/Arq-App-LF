@@ -318,7 +318,7 @@ jobs:
             echo
             echo "- Fotos: $FOTOS"
             echo "- Trabajos: $RESULTADOS"
-            for f in "$DESTINO/$RUN"/*/tiempos.txt; do echo; echo "## $(basename "$(dirname "$f")")"; echo '```'; cat "$f"; echo '```'; done
+            for f in "$DESTINO/$RUN"/*/tiempos.txt; do [ -f "$f" ] || continue; echo; echo "## $(basename "$(dirname "$f")")"; echo '```'; cat "$f"; echo '```'; done
           } > "$DESTINO/$RUN/README.md"
           cat "$DESTINO/$RUN/README.md"
           git config user.name "github-actions[bot]"
